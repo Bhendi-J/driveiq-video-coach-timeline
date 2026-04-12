@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+
+# Large model/data artifacts
+models/flan_t5_coach/
+models/*.pkl
+models/*.safetensors
+yolov8n.pt
+training-annotation/
+0009/
+0010/
+1001/
+artifacts/
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
