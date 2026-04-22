@@ -5,25 +5,20 @@ function fmt(val, digits = 2) {
   return Number.isFinite(n) ? n.toFixed(digits) : '—'
 }
 
-export default function FeatureTable({ features, predictedFuelRate }) {
+export default function FeatureTable({ features }) {
   const rows = [
-    { label: 'Speed',           value: features?.speed != null ? `${fmt(features.speed, 1)} km/h` : '—' },
-    { label: 'RPM',             value: features?.rpm != null ? fmt(features.rpm, 0) : '—' },
-    { label: 'Throttle',        value: features?.throttle_position != null ? `${fmt(features.throttle_position, 1)}%` : '—' },
-    { label: 'Gear',            value: features?.gear ?? '—' },
-    { label: 'Vehicles Nearby', value: features?.vehicle_count ?? '—' },
-    { label: 'Proximity',       value: features?.proximity_score != null ? `${fmt(features.proximity_score * 100, 1)}%` : '—' },
-    { label: 'Pedestrian',      value: FLAG_LABEL[features?.pedestrian_flag] ?? '—' },
-    { label: 'Braking',         value: FLAG_LABEL[features?.braking_flag]    ?? '—' },
-    { label: 'Lane Change',     value: FLAG_LABEL[features?.lane_change_flag] ?? '—' },
-    { label: 'Road Type ID',    value: features?.road_type_id ?? '—' },
-    { label: 'Weather ID',      value: features?.weather_id   ?? '—' },
-    { label: 'Pred. Fuel Rate', value: predictedFuelRate != null ? `${predictedFuelRate.toFixed(2)} L/100` : '—' },
+    { label: 'RPM',             value: fmt(features?.rpm ?? 0, 0) },
+    { label: 'Throttle Position', value: `${fmt(features?.throttle_position ?? 0, 1)}%` },
+    { label: 'Braking Flag',    value: FLAG_LABEL[Number(features?.braking_flag ?? 0)] ?? '✅ None' },
+    { label: 'Lane Change Flag', value: FLAG_LABEL[Number(features?.lane_change_flag ?? 0)] ?? '✅ None' },
+    { label: 'Proximity Score', value: fmt(features?.proximity_score ?? 0, 4) },
+    { label: 'Mean Flow',       value: fmt(features?.mean_flow ?? 0, 4) },
+    { label: 'Flow Variance',   value: fmt(features?.flow_variance ?? 0, 4) },
   ]
 
   return (
     <div className="card">
-      <div className="card-title">📋 Live Telemetry</div>
+      <div className="card-title">Feature Snapshot</div>
       <table className="feat-table">
         <thead>
           <tr>

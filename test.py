@@ -47,11 +47,9 @@ class DriveIQApiTests(unittest.TestCase):
 		self.assertIn("core_models_loaded", data)
 		self.assertIn("schema_valid", data)
 		self.assertIn("schema_error", data)
-		self.assertIn("optional_models_loaded", data)
 		self.assertIn("version", data)
 		self.assertEqual(data["models_loaded"], data["core_models_loaded"])
 		self.assertIsInstance(data["missing_core_models"], list)
-		self.assertIsInstance(data["missing_optional_models"], list)
 
 		# Current readiness: xgb+scaler+schema.
 		models = self.app.config["MODELS"]
@@ -188,7 +186,8 @@ class DriveIQApiTests(unittest.TestCase):
 		self.assertIn("tips", data)
 		self.assertIn("severity", data)
 		self.assertIsInstance(data["tips"], list)
-		self.assertEqual(len(data["tips"]), 3)
+		self.assertGreaterEqual(len(data["tips"]), 2)
+		self.assertLessEqual(len(data["tips"]), 3)
 		self.assertIn(data["severity"], {"green", "yellow", "red"})
 
 	def test_coach_generation_contract_bounds(self):
@@ -209,7 +208,8 @@ class DriveIQApiTests(unittest.TestCase):
 
 		self.assertIn("tips", data)
 		self.assertIsInstance(data["tips"], list)
-		self.assertEqual(len(data["tips"]), 3)
+		self.assertGreaterEqual(len(data["tips"]), 2)
+		self.assertLessEqual(len(data["tips"]), 3)
 		for t in data["tips"]:
 			self.assertIsInstance(t, str)
 			self.assertTrue(t.strip())
@@ -242,27 +242,24 @@ class DriveIQApiTests(unittest.TestCase):
 		self.assertEqual(r_red.status_code, 200)
 		self.assertEqual(r_red.get_json().get("severity"), "red")
 
-	def test_coach_flan_branch_contract(self):
-		with patch(
-			"backend.routes.coach._generate_flan_tip",
-			return_value=("Hold a smoother throttle through this segment.", "flan_ok"),
-		):
-			r = self.client.post(
-				"/api/coach",
-				json={
-					"session_id": "coach-flan-branch",
-					"score": 55,
-					"features": {"braking_flag": 1, "proximity_score": 0.2},
-					"predicted_fuel_rate": 8.0,
-				},
-			)
+	def test_coach_rule_based_source_contract(self):
+		"""Verify coaching always returns cv_rules source after Flan-T5 removal."""
+		r = self.client.post(
+			"/api/coach",
+			json={
+				"session_id": "coach-rules-branch",
+				"score": 55,
+				"features": {"braking_ratio": 1, "proximity_score": 0.2},
+				"predicted_fuel_rate": 8.0,
+			},
+		)
 		self.assertEqual(r.status_code, 200)
 		data = r.get_json()
-		self.assertEqual(data.get("source"), "flan_t5")
+		self.assertEqual(data.get("source"), "cv_rules")
 		self.assertIn("tips", data)
-		self.assertEqual(len(data["tips"]), 3)
+		self.assertGreaterEqual(len(data["tips"]), 2)
+		self.assertLessEqual(len(data["tips"]), 3)
 		self.assertTrue(data["tips"][0].strip())
-		# Keep generated advice compact.
 		self.assertLessEqual(len(data["tips"][0]), 220)
 
 

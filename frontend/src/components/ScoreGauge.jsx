@@ -9,6 +9,7 @@ const scoreColor = (s) =>
 export default function ScoreGauge({ score }) {
   const s = Math.round(score ?? 0)
   const color = scoreColor(s)
+  const severityLabel = s >= 80 ? 'Good Driving' : s >= 50 ? 'Needs Attention' : 'Poor — Act Now'
 
   const data = {
     datasets: [{
@@ -37,6 +38,7 @@ export default function ScoreGauge({ score }) {
         <div className="gauge-center">
           <span className="gauge-score" style={{ color }}>{s}</span>
           <span className="gauge-label">/ 100</span>
+          <span className="gauge-severity-label">{severityLabel}</span>
         </div>
       </div>
     </div>

@@ -9,22 +9,27 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 import numpy as np
 import cv2
 
 
-# Must stay in sync with pipeline/preprocess.py:XGB_FEATURE_SCHEMA
+# Must stay in sync exactly with XGBoost inference model features
 XGB_FEATURE_SCHEMA = [
-    "vehicle_count",
-    "proximity_score",
-    "pedestrian_flag",
     "mean_flow",
     "flow_variance",
-    "braking_flag",
-    "lane_change_flag",
-    "road_type_id",
-    "weather_id",
+    "braking_ratio",
+    "lane_change_ratio",
+    "proximity_score",
+    "vehicle_density",
+    "pedestrian_ratio",
+    "low_motion_ratio"
 ]
+
+DEBUG_CV = os.environ.get("DRIVEIQ_CV_DEBUG", "0") == "1"
+logger = logging.getLogger("driveiq.cv.pipeline")
 
 
 def classify_scene(frame_bgr: np.ndarray) -> dict:
@@ -54,50 +59,73 @@ def cv_pipeline(
     Returns:
         Combined feature dict ready for model inference.
     """
+    t0 = time.perf_counter()
     from cv.yolo_pipeline import extract_yolo_features
     from cv.optical_flow  import extract_flow_features
 
     # ── YOLO features ────────────────────────────────────────────────────────
+    t_yolo = time.perf_counter()
     yolo_feats = extract_yolo_features(curr_frame)
+    yolo_ms = (time.perf_counter() - t_yolo) * 1000.0
 
     # ── Optical flow features ─────────────────────────────────────────────────
     if prev_frame is not None:
+        t_flow = time.perf_counter()
         flow_feats = extract_flow_features(prev_frame, curr_frame)
+        flow_ms = (time.perf_counter() - t_flow) * 1000.0
     else:
         flow_feats = {
             "mean_flow": 0.0, "variance": 0.0,
             "braking_flag": 0, "lane_change_flag": 0,
         }
+        flow_ms = 0.0
 
     # ── Scene classification ──────────────────────────────────────────────────
     scene_feats = classify_scene(curr_frame)
 
     # ── Telemetry passthrough ─────────────────────────────────────────────────
     tele = telemetry or {}
+    pedestrian_count = float(yolo_feats.get("pedestrian_count", yolo_feats.get("pedestrian_flag", 0.0)))
+    pedestrian_ratio = min(pedestrian_count / 5.0, 1.0)
+    braking_ratio = float(flow_feats["braking_flag"])
+    lane_change_ratio = float(flow_feats["lane_change_flag"])
 
     feature_vector = {
-        # YOLO
-        "vehicle_count":      yolo_feats["vehicle_count"],
-        "proximity_score":    yolo_feats["proximity_score"],
-        "pedestrian_flag":    yolo_feats["pedestrian_flag"],
-        # Optical flow
-        "mean_flow":          flow_feats["mean_flow"],
-        "flow_variance":      flow_feats["variance"],
-        "braking_flag":       flow_feats["braking_flag"],
-        "lane_change_flag":   flow_feats["lane_change_flag"],
+        "mean_flow":          float(flow_feats["mean_flow"]),
+        "flow_variance":      float(flow_feats["variance"]),
+        "braking_flag":       int(braking_ratio > 0.3),  # Keep legacy binary flag for UI
+        "braking_ratio":      braking_ratio,
+        "lane_change_flag":   int(lane_change_ratio > 0.3),  # Keep legacy binary flag for UI
+        "lane_change_ratio":  lane_change_ratio,
+        "proximity_score":    float(yolo_feats["proximity_score"]),
+        "vehicle_density":    float(yolo_feats["vehicle_count"]),
+        "pedestrian_ratio":   float(pedestrian_ratio),
+        "low_motion_ratio":   1.0 if float(flow_feats["mean_flow"]) < 0.5 else 0.0,
+        
         # Scene
         "road_type":          scene_feats["road_type"],
         "weather":            scene_feats["weather"],
         "road_type_id":       scene_feats["road_type_id"],
         "weather_id":         scene_feats["weather_id"],
+        
         # Telemetry
-        "speed":              tele.get("speed", 0),
-        "rpm":                tele.get("rpm", 0),
-        "throttle_position":  tele.get("throttle_position", 0),
+        "speed":              float(tele.get("speed", 0)),
+        "rpm":                float(tele.get("rpm", 0)),
+        "throttle_position":  float(tele.get("throttle_position", 0)),
         "gear":               tele.get("gear", 1),
-        "acceleration":       tele.get("acceleration", 0),
-        "fuel_rate":          tele.get("fuel_rate", 0),
+        "acceleration":       float(tele.get("acceleration", 0)),
+        "fuel_rate":          float(tele.get("fuel_rate", 0)),
     }
+
+    if DEBUG_CV:
+        logger.info(
+            "cv_pipeline done elapsed_ms=%.1f yolo_ms=%.1f flow_ms=%.1f prev=%s out_keys=%s",
+            (time.perf_counter() - t0) * 1000.0,
+            yolo_ms,
+            flow_ms,
+            prev_frame is not None,
+            list(feature_vector.keys()),
+        )
 
     return feature_vector
 
@@ -105,33 +133,31 @@ def cv_pipeline(
 def feature_vector_for_xgb(features: dict, scaler=None) -> np.ndarray:
     """
     Convert the full feature dict into the numeric vector expected by XGBoost.
-    Matches the column order from preprocess.py.
+    Filters explicitly by the exact 8-component array ordered correctly.
     """
-    row = {
-        "vehicle_count": float(features.get("vehicle_count", 0.0)),
-        "proximity_score": float(features.get("proximity_score", 0.0)),
-        "pedestrian_flag": float(features.get("pedestrian_flag", 0.0)),
-        "mean_flow": float(features.get("mean_flow", 0.0)),
-        "flow_variance": float(features.get("flow_variance", 0.0)),
-        "braking_flag": float(features.get("braking_flag", 0.0)),
-        "lane_change_flag": float(features.get("lane_change_flag", 0.0)),
-        "road_type_id": float(features.get("road_type_id", 0.0)),
-        "weather_id": float(features.get("weather_id", 0.0)),
-    }
+    # Defensive casting
+    row = {k: float(features.get(k, 0.0)) for k in XGB_FEATURE_SCHEMA}
+    
+    # Strict 8 ordered vector
+    ordered = [row[c] for c in XGB_FEATURE_SCHEMA]
+    # Defensive numeric checks: no NaNs, clip ratios [0, 1]
+    sanitized = []
+    for i, val in enumerate(ordered):
+        val = 0.0 if np.isnan(val) or np.isinf(val) else val
+        if XGB_FEATURE_SCHEMA[i] in ("braking_ratio", "lane_change_ratio", "proximity_score", "pedestrian_ratio", "low_motion_ratio"):
+            val = max(0.0, min(1.0, val))
+        sanitized.append(val)
 
-    # Build row in the canonical order used during scaler training.
-    v = np.array([[row[c] for c in XGB_FEATURE_SCHEMA]], dtype=np.float32)
-
+    v = np.array([sanitized], dtype=np.float32)
+    
     if scaler is not None:
-        # Use DataFrame when possible so sklearn can align by feature names.
         try:
             import pandas as pd
-            col_order = list(getattr(scaler, "feature_names_in_", XGB_FEATURE_SCHEMA))
-            x_df = pd.DataFrame([{c: row.get(c, 0.0) for c in col_order}], columns=col_order)
+            x_df = pd.DataFrame([sanitized], columns=XGB_FEATURE_SCHEMA)
             v = scaler.transform(x_df)
         except Exception:
             v = scaler.transform(v)
-
+            
     return v
 
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios'
 
 import ScoreGauge         from './components/ScoreGauge'
@@ -6,62 +6,17 @@ import CoachingPanel      from './components/CoachingPanel'
 import TrendChart         from './components/TrendChart'
 import BehaviourVisualiser from './components/BehaviourVisualiser'
 import FeatureTable        from './components/FeatureTable'
+import ReviewPanel         from './components/ReviewPanel'
+import LoginPanel          from './components/LoginPanel'
+import { Bar }   from 'react-chartjs-2'
+import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
+
+ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
 
 const API = ''   // empty = same origin (Vite proxy to Flask)
 const POLL_MS = 2500
 const HEALTH_POLL_MS = 15000
-const SCORE_FAIL_BACKOFF_MS = 8000
-const COACH_RETRY_MIN_MS = 10000
 const BACKEND_FAIL_THRESHOLD = 3
-const HISTORY_MAX = 30
-
-const DEMO_SCENARIOS = {
-  green: {
-    score: 84,
-    features: {
-      braking_flag: 0,
-      lane_change_flag: 0,
-      proximity_score: 0.04,
-      mean_flow: 1.2,
-      flow_variance: 0.5,
-      vehicle_count: 2,
-      weather_id: 0,
-      road_type_id: 1,
-    },
-    predictedFuelRate: 5.9,
-    historySummary: 'Smooth throttle and stable lane discipline in light traffic.',
-  },
-  yellow: {
-    score: 62,
-    features: {
-      braking_flag: 1,
-      lane_change_flag: 0,
-      proximity_score: 0.17,
-      mean_flow: 2.0,
-      flow_variance: 1.0,
-      vehicle_count: 5,
-      weather_id: 1,
-      road_type_id: 2,
-    },
-    predictedFuelRate: 7.8,
-    historySummary: 'Moderate stop-and-go traffic with a few abrupt decelerations.',
-  },
-  red: {
-    score: 34,
-    features: {
-      braking_flag: 1,
-      lane_change_flag: 1,
-      proximity_score: 0.28,
-      mean_flow: 3.1,
-      flow_variance: 1.8,
-      vehicle_count: 9,
-      weather_id: 2,
-      road_type_id: 3,
-    },
-    predictedFuelRate: 10.9,
-    historySummary: 'Aggressive speed variation, dense traffic, and repeated harsh maneuvers.',
-  },
-}
 
 // Simulate telemetry that changes over time for demo
 function generateTelemetry(t) {
@@ -118,97 +73,121 @@ function generateSyntheticFrameB64(t, telemetry) {
   return dataUrl.split(',')[1]
 }
 
-function synthFeaturesFromTelemetry(telemetry) {
-  const speed = Number(telemetry?.speed ?? 0)
-  const accel = Number(telemetry?.acceleration ?? 0)
-  const throttle = Number(telemetry?.throttle_position ?? 0)
+const ZERO_FEATURES = {
+  rpm: 0,
+  throttle_position: 0,
+  braking_flag: 0,
+  lane_change_flag: 0,
+  proximity_score: 0,
+  mean_flow: 0,
+  flow_variance: 0,
+}
 
-  const proximity = Math.max(0, Math.min(1, (speed - 35) / 100))
-  const meanFlow = Math.abs(accel) * 0.8 + throttle / 120
-  const flowVariance = Math.abs(accel) * 0.5
-
-  return {
-    vehicle_count: Math.max(0, Math.min(12, Math.round(1 + speed / 30))),
-    proximity_score: Number(proximity.toFixed(4)),
-    pedestrian_flag: 0,
-    mean_flow: Number(meanFlow.toFixed(4)),
-    flow_variance: Number(flowVariance.toFixed(4)),
-    braking_flag: accel < -0.8 ? 1 : 0,
-    lane_change_flag: Math.abs(accel) > 1.6 ? 1 : 0,
-    road_type_id: speed > 70 ? 1 : 0,
-    weather_id: 0,
+function severityClass(score) {
+  if (score === 'green' || score === 'yellow' || score === 'red') {
+    return `severity-${score}`
   }
+  if (score >= 75) return 'severity-green'
+  if (score >= 50) return 'severity-yellow'
+  return 'severity-red'
 }
 
-function heuristicScore(features) {
-  let s = 85
-  s -= Number(features?.proximity_score ?? 0) * 30
-  s -= Number(features?.mean_flow ?? 0) * 8
-  s -= Number(features?.flow_variance ?? 0) * 10
-  s -= Number(features?.braking_flag ?? 0) * 12
-  s -= Number(features?.lane_change_flag ?? 0) * 10
-  return Math.max(0, Math.min(100, s))
-}
-
-function severityFromScore(s) {
-  if (s >= 75) return 'green'
-  if (s >= 50) return 'yellow'
+function severityLabel(score) {
+  if (score >= 75) return 'green'
+  if (score >= 50) return 'yellow'
   return 'red'
 }
 
-function localTips(features) {
-  const tips = []
-  if (features?.braking_flag) tips.push('Anticipate traffic earlier and reduce abrupt braking events.')
-  if (features?.lane_change_flag) tips.push('Avoid unnecessary lane changes to maintain smooth momentum.')
-  if (Number(features?.proximity_score ?? 0) > 0.15) tips.push('Increase following distance to smooth acceleration and deceleration.')
-  const defaults = [
-    'Keep throttle inputs gentle and progressive.',
-    'Maintain a steady cruising speed whenever possible.',
-    'Check tire pressure regularly to reduce rolling resistance.',
-  ]
-  for (const d of defaults) {
-    if (tips.length >= 3) break
-    if (!tips.includes(d)) tips.push(d)
+function getLiveInsights(features, score) {
+  const insights = []
+  
+  if (score >= 80) {
+    insights.push({ label: 'Excellent driving behavior', type: 'green' })
+  } else if (score < 50) {
+    insights.push({ label: 'Eco score is critical', type: 'red' })
   }
-  return tips.slice(0, 3)
+
+  if (features?.braking_flag === 1 || features?.braking_flag_ratio > 0) {
+    insights.push({ label: 'Harsh braking detected (-score)', type: 'red' })
+  }
+  if (features?.lane_change_flag === 1 || features?.lane_change_flag_ratio > 0) {
+    insights.push({ label: 'Erratic swerving / lane changes', type: 'yellow' })
+  }
+  if (Number(features?.proximity_score) > 0.15) {
+    insights.push({ label: 'Following distance too close (tailgating)', type: 'red' })
+  } else if (Number(features?.proximity_score) > 0.05) {
+    insights.push({ label: 'Moderate following distance', type: 'yellow' })
+  }
+  if (Number(features?.flow_variance) > 5.0) {
+    insights.push({ label: 'High optical velocity changes', type: 'yellow' })
+  }
+  
+  if (insights.length === 0 || (insights.length === 1 && insights[0].type === 'green')) {
+    insights.push({ label: 'Maintaining smooth, safe flow (+score)', type: 'green' })
+  }
+  
+  // Deduplicate using Map
+  const unique = new Map()
+  insights.forEach(i => unique.set(i.label, i))
+  return Array.from(unique.values())
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const payloadPart = String(token || '').split('.')[1]
+    if (!payloadPart) return null
+    const base64 = payloadPart.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4)
+    return JSON.parse(atob(padded))
+  } catch {
+    return null
+  }
+}
+
+function isJwtExpired(token) {
+  const payload = decodeJwtPayload(token)
+  if (!payload || typeof payload.exp !== 'number') return true
+  return (Date.now() / 1000) >= Number(payload.exp)
 }
 
 export default function App() {
-  const [score,             setScore]             = useState(72)
-  const [features,          setFeatures]          = useState({})
-  const [tips,              setTips]              = useState([])
-  const [coachMessage,      setCoachMessage]      = useState('Monitoring driving behaviour...')
-  const [coachSeverity,     setCoachSeverity]     = useState('yellow')
-  const [tipsLoading,       setTipsLoading]       = useState(false)
-  const [predictedFuelRate, setPredictedFuelRate] = useState(null)
-  const [scoreHistory,      setScoreHistory]      = useState([72])
-  const [connected,         setConnected]         = useState(false)
-  const [lastTipScore,      setLastTipScore]      = useState(null)
-  const [coachSource,       setCoachSource]       = useState('rules')
-  const [coachFallback,     setCoachFallback]     = useState(false)
-  const [coachDebugReason,  setCoachDebugReason]  = useState('')
-  const [coachWarning,      setCoachWarning]      = useState('')
-  const [scoreLatencyMs,    setScoreLatencyMs]    = useState(null)
-  const [coachLatencyMs,    setCoachLatencyMs]    = useState(null)
+  const [token,             setToken]             = useState(localStorage.getItem('driveiq_token') || '')
+  const [showAuthDialog,    setShowAuthDialog]    = useState(false)
+  
+  const [isLiveMode,        setIsLiveMode]        = useState(false)
+  const [liveScore,         setLiveScore]         = useState(0)
+  const [liveFeatures,      setLiveFeatures]      = useState({ ...ZERO_FEATURES })
+  const [reviewResult,      setReviewResult]      = useState(null)
+  const [selectedWindow,    setSelectedWindow]    = useState(null)
   const [healthState,       setHealthState]       = useState('checking')
   const [healthMessage,     setHealthMessage]     = useState('Checking backend health...')
   const [offlineMode,       setOfflineMode]       = useState(false)
-
+  const [sessionSaveWarning, setSessionSaveWarning] = useState('')
+  const [healthMeta,        setHealthMeta]        = useState({ schema_valid: false, core_models_loaded: false })
+  const [livePoints,        setLivePoints]        = useState([])
+  const [liveEvents,        setLiveEvents]        = useState([])
+  const [liveVideoFile,     setLiveVideoFile]     = useState(null)
+  const [streamActive,      setStreamActive]      = useState(false)
+  
+  const liveVideoUrl = useMemo(() => {
+    if (!liveVideoFile) return null
+    return URL.createObjectURL(liveVideoFile)
+  }, [liveVideoFile])
+  
   const clockRef = useRef(0)
   const sessionIdRef = useRef(`sess-${Math.random().toString(36).slice(2)}`)
+  const sessionStartedAtRef = useRef(Date.now())
   const prevFrameRef = useRef(null)
-  const lastScoreFailureAtRef = useRef(0)
-  const lastCoachAttemptAtRef = useRef(0)
   const healthFailCountRef = useRef(0)
+  const liveVideoRef = useRef(null)
+  const streamCompleteRef = useRef(false)
 
-  const historySummaryFromState = useCallback(() => {
-    const recent = scoreHistory.slice(-5)
-    if (!recent.length) {
-      return 'No recent score history.'
+  // Cleanup object URLs
+  useEffect(() => {
+    return () => {
+      if (liveVideoUrl) URL.revokeObjectURL(liveVideoUrl)
     }
-    const avg = recent.reduce((a, b) => a + b, 0) / recent.length
-    return `Recent average score ${avg.toFixed(1)} across ${recent.length} samples.`
-  }, [scoreHistory])
+  }, [liveVideoUrl])
 
   const fetchHealth = useCallback(async () => {
     if (offlineMode) {
@@ -219,12 +198,15 @@ export default function App() {
       const { data } = await axios.get(`${API}/api/health`)
       healthFailCountRef.current = 0
       setOfflineMode(false)
+      setHealthMeta({
+        schema_valid: Boolean(data?.schema_valid),
+        core_models_loaded: Boolean(data?.core_models_loaded),
+      })
       const scoreReady = data?.score_ready === true
-      const coachReady = data?.coach_ready === true
-      const ready = data?.ready === true || (scoreReady && (coachReady || data?.coach_disabled === true))
+      const ready = data?.ready === true || scoreReady
       if (ready) {
         setHealthState('ready')
-        setHealthMessage('Backend ready: scoring and coaching services online.')
+        setHealthMessage('Backend ready for review and scoring.')
       } else {
         setHealthState('degraded')
         const reasonParts = []
@@ -239,8 +221,7 @@ export default function App() {
       if (healthFailCountRef.current >= BACKEND_FAIL_THRESHOLD) {
         setOfflineMode(true)
         setHealthState('degraded')
-        setHealthMessage('Backend unavailable. Running local offline simulation mode.')
-        setConnected(true)
+        setHealthMessage('Backend unavailable. UI is in offline placeholder mode.')
       } else {
         setHealthState('error')
         setHealthMessage('Cannot reach backend health endpoint.')
@@ -248,154 +229,114 @@ export default function App() {
     }
   }, [offlineMode])
 
-  // ── /api/score polling ───────────────────────────────────────────────────
+  // ── /api/score polling (Live Mode only) ──────────────────────────────────
   const fetchScore = useCallback(async () => {
-    if (offlineMode) {
+    if (!isLiveMode) {
+      return
+    }
+
+    if (offlineMode || healthState === 'error') {
+      return
+    }
+
+    // If stream already completed full pass, don't score again
+    if (streamCompleteRef.current) {
+      return
+    }
+
+    let frameB64 = null
+    const v = liveVideoRef.current
+    if (v && v.readyState >= 2 && !v.paused && !v.ended) {
+      const canvas = document.createElement('canvas')
+      canvas.width = 480
+      canvas.height = 270
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      ctx.drawImage(v, 0, 0, 480, 270)
+      frameB64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1]
+      clockRef.current = v.currentTime
+    } else if (v) {
+      // Video element exists but is paused/ended — stop scoring
+      return
+    } else if (streamActive) {
+      // No video element at all, but stream active — use synthetic fallback
       clockRef.current += POLL_MS / 1000
-      const telemetry = generateTelemetry(clockRef.current)
-      const vision = synthFeaturesFromTelemetry(telemetry)
-      const merged = { ...vision, ...telemetry }
-      const s = Number(heuristicScore(vision).toFixed(2))
-      setScore(s)
-      setFeatures(merged)
-      setPredictedFuelRate(Number(telemetry.fuel_rate.toFixed(2)))
-      setScoreLatencyMs(0)
-      setConnected(true)
-      setScoreHistory(prev => {
-        const next = [...prev, s]
-        return next.length > HISTORY_MAX ? next.slice(-HISTORY_MAX) : next
-      })
-      return
+      frameB64 = generateSyntheticFrameB64(clockRef.current, generateTelemetry(clockRef.current))
+    } else {
+      return // Not active
     }
 
-    if (healthState === 'error') {
-      return
-    }
-
-    if (Date.now() - lastScoreFailureAtRef.current < SCORE_FAIL_BACKOFF_MS) {
-      return
-    }
-
-    clockRef.current += POLL_MS / 1000
-    const telemetry = generateTelemetry(clockRef.current)
-    const frameB64 = generateSyntheticFrameB64(clockRef.current, telemetry)
+    // When real video is playing, send neutral/empty telemetry so the backend
+    // relies purely on CV-extracted features (not fake sine-wave acceleration).
+    const hasRealVideo = liveVideoRef.current && liveVideoRef.current.readyState >= 2
+    const telemetry = hasRealVideo
+      ? { speed: 0, rpm: 0, throttle_position: 0, gear: 0, acceleration: 0, fuel_rate: 0 }
+      : generateTelemetry(clockRef.current)
     const prevFrameB64 = prevFrameRef.current
+    const tokenExpired = Boolean(token) && isJwtExpired(token)
+    const authHeaders = {}
+    if (token && !tokenExpired) {
+      authHeaders.Authorization = `Bearer ${token}`
+    } else if (token && tokenExpired) {
+      setSessionSaveWarning('Session expired. Live scoring continues, but this drive is not being saved. Please log in again.')
+    }
 
     try {
-      const start = performance.now()
       const { data } = await axios.post(`${API}/api/score`, {
         telemetry,
         session_id: sessionIdRef.current,
+        session_started_at: sessionStartedAtRef.current,
         frame_b64: frameB64,
         prev_frame_b64: prevFrameB64,
+      }, {
+        headers: authHeaders
       })
-      setScoreLatencyMs(Math.round(performance.now() - start))
       prevFrameRef.current = frameB64
-      setScore(data.score)
-      const merged = { ...data.features, ...telemetry }
-      setFeatures(merged)
-      setConnected(true)
-      setCoachWarning('')
-      setScoreHistory(prev => {
-        const next = [...prev, data.score]
-        return next.length > HISTORY_MAX ? next.slice(-HISTORY_MAX) : next
+
+      if (token && !tokenExpired) {
+        if (data?.auth_failed) {
+          setSessionSaveWarning('Authentication failed. Live scoring continues, but this drive is not being saved. Please log in again.')
+        } else if (data?.session_saved === false) {
+          setSessionSaveWarning('Live scoring is active, but session saving is currently unavailable.')
+        } else if (data?.session_saved === true) {
+          setSessionSaveWarning('')
+        }
+      }
+      
+      const s = Number(data.score ?? 0)
+      setLiveScore(s)
+      
+      const featuresMerged = { ...data.features }
+      setLiveFeatures(featuresMerged)
+      
+      const insights = getLiveInsights(featuresMerged, s)
+      const severity = severityLabel(s)
+      
+      setLivePoints(prev => {
+        const next = [...prev, { timestamp_sec: clockRef.current, score: s, severity }]
+        if (next.length > 60) next.shift()
+        return next
       })
 
-      // Keep a stable fuel metric for coaching payload and UI while /api/predict is removed.
-      const fuelRate = Number(telemetry?.fuel_rate ?? 0)
-      setPredictedFuelRate(Number.isFinite(fuelRate) ? fuelRate : null)
+      // Pin one consolidated event per timestamp to the live log
+      const warnings = insights.filter((i) => i.type !== 'green')
+      if (warnings.length > 0) {
+        // Pick the worst severity and join all labels
+        const worst = warnings.some(w => w.type === 'red') ? 'red' : 'yellow'
+        const summary = warnings.map(w => w.label).join(' · ')
+        setLiveEvents(prev => {
+          const entry = { label: summary, type: worst, timestamp_sec: clockRef.current }
+          const next = [entry, ...prev]
+          if (next.length > 30) next.length = 30
+          return next
+        })
+      }
 
     } catch {
-      setConnected(false)
-      setScoreLatencyMs(null)
-      lastScoreFailureAtRef.current = Date.now()
       setHealthState('degraded')
       setHealthMessage('Backend unstable. Retrying score stream with backoff...')
     }
-  }, [healthState, offlineMode])
-
-  // ── /api/coach — only re-fetch when score changes by ≥5 ─────────────────
-  const fetchTips = useCallback(async (currentScore, currentFeatures, fuelRate, historySummary) => {
-    if (offlineMode) {
-      setTipsLoading(true)
-      const local = localTips(currentFeatures)
-      setTips(local)
-      setCoachSeverity(severityFromScore(currentScore))
-      setCoachMessage('Offline mode coaching based on local driving heuristics.')
-      setCoachSource('local_rules')
-      setCoachFallback(true)
-      setCoachDebugReason('offline_demo_mode')
-      setCoachWarning('Backend unavailable. Showing local simulated coaching.')
-      setCoachLatencyMs(0)
-      setLastTipScore(currentScore)
-      setTipsLoading(false)
-      return
-    }
-
-    const now = Date.now()
-    if (now - lastCoachAttemptAtRef.current < COACH_RETRY_MIN_MS) {
-      return
-    }
-    lastCoachAttemptAtRef.current = now
-
-    setTipsLoading(true)
-    try {
-      const start = performance.now()
-      const { data } = await axios.post(`${API}/api/coach`, {
-        session_id: sessionIdRef.current,
-        score: currentScore,
-        features: currentFeatures,
-        predicted_fuel_rate: fuelRate ?? 0,
-        history_summary: historySummary || 'Live session in progress.',
-      })
-      setCoachLatencyMs(Math.round(performance.now() - start))
-      setTips(data.tips || [])
-      setCoachMessage(data.message || 'Focus on smooth and consistent driving.')
-      setCoachSeverity(data.severity || 'yellow')
-      setCoachSource(data.source || 'rules')
-      setCoachFallback(Boolean(data.fallback))
-      setCoachDebugReason(data.debug_flan_reason || '')
-      setCoachWarning('')
-      setLastTipScore(currentScore)
-    } catch {
-      setCoachLatencyMs(null)
-      if (!tips.length) {
-        setTips(['Maintain steady speed.', 'Anticipate traffic ahead.', 'Keep tyre pressure optimal.'])
-        setCoachMessage('Coaching service unavailable; showing fallback tips.')
-        setCoachSeverity('yellow')
-      }
-      setCoachSource('rules')
-      setCoachFallback(true)
-      setCoachWarning('Coaching request failed. Showing latest available tips.')
-      setLastTipScore(currentScore)
-    } finally {
-      setTipsLoading(false)
-    }
-  }, [tips.length, offlineMode])
-
-  const runScenario = useCallback((key) => {
-    const scenario = DEMO_SCENARIOS[key]
-    if (!scenario) return
-
-    const mergedFeatures = {
-      ...features,
-      ...scenario.features,
-      speed: scenario.score >= 75 ? 72 : scenario.score >= 50 ? 88 : 114,
-      rpm: scenario.score >= 75 ? 1850 : scenario.score >= 50 ? 2350 : 2950,
-      throttle_position: scenario.score >= 75 ? 28 : scenario.score >= 50 ? 42 : 61,
-      gear: scenario.score >= 75 ? 5 : scenario.score >= 50 ? 4 : 3,
-      acceleration: scenario.score >= 75 ? 0.3 : scenario.score >= 50 ? 1.1 : 2.0,
-    }
-
-    setScore(scenario.score)
-    setFeatures(mergedFeatures)
-    setPredictedFuelRate(scenario.predictedFuelRate)
-    setScoreHistory(prev => {
-      const next = [...prev, scenario.score]
-      return next.length > HISTORY_MAX ? next.slice(-HISTORY_MAX) : next
-    })
-    fetchTips(scenario.score, mergedFeatures, scenario.predictedFuelRate, scenario.historySummary)
-  }, [features, fetchTips])
+  }, [healthState, offlineMode, isLiveMode])
 
   const reconnectBackend = useCallback(async () => {
     healthFailCountRef.current = 0
@@ -407,87 +348,324 @@ export default function App() {
   useEffect(() => {
     fetchHealth()
     const healthId = setInterval(fetchHealth, HEALTH_POLL_MS)
-    fetchScore()
-    const scoreId = setInterval(fetchScore, POLL_MS)
+    let scoreId = null
+    if (isLiveMode) {
+      fetchScore()
+      scoreId = setInterval(fetchScore, POLL_MS)
+    }
     return () => {
-      clearInterval(scoreId)
+      if (scoreId) clearInterval(scoreId)
       clearInterval(healthId)
     }
-  }, [fetchHealth, fetchScore])
+  }, [fetchHealth, fetchScore, isLiveMode])
 
-  // Fetch tips when score shifts enough
-  useEffect(() => {
-    if (connected && (lastTipScore === null || Math.abs(score - lastTipScore) >= 5)) {
-      fetchTips(score, features, predictedFuelRate, historySummaryFromState())
-    }
-  }, [score, connected]) // eslint-disable-line
+  const reviewPoints = useMemo(() => {
+    if (isLiveMode) return livePoints
+    return reviewResult?.segments || []
+  }, [isLiveMode, livePoints, reviewResult])
+  const displayedScore = isLiveMode
+    ? liveScore
+    : Number(selectedWindow?.avg_score ?? selectedWindow?.score ?? 0)
+  const displayedFeatures = isLiveMode
+    ? {
+        rpm: liveFeatures?.rpm ?? 0,
+        throttle_position: liveFeatures?.throttle_position ?? 0,
+        braking_flag: liveFeatures?.braking_flag ?? 0,
+        lane_change_flag: liveFeatures?.lane_change_flag ?? 0,
+        proximity_score: liveFeatures?.proximity_score ?? 0,
+        mean_flow: liveFeatures?.mean_flow ?? 0,
+        flow_variance: liveFeatures?.flow_variance ?? 0,
+      }
+    : {
+        rpm: Number(selectedWindow?.rpm ?? 0),
+        throttle_position: Number(selectedWindow?.throttle_position ?? 0),
+        braking_flag: Number(selectedWindow?.braking_flag_ratio ?? 0) > 0 ? 1 : 0,
+        lane_change_flag: Number(selectedWindow?.lane_change_flag_ratio ?? 0) > 0 ? 1 : 0,
+        proximity_score: Number(selectedWindow?.proximity_score_mean ?? 0),
+        mean_flow: Number(selectedWindow?.mean_flow_mean ?? 0),
+        flow_variance: Number(selectedWindow?.flow_variance ?? 0),
+      }
+
+  const selectedCoach = selectedWindow?.coach_note || 'Select a segment to view coaching note.'
+  const selectedSeverity = selectedWindow?.severity || 'yellow'
 
   const healthClass = `health-banner health-${healthState}`
+  const schemaOk = healthMeta.schema_valid
+  const modelsOk = healthMeta.core_models_loaded
 
   return (
     <>
-      {/* ── Top bar ── */}
       <header className="topbar">
-        <div className="topbar-logo">
-          <span>DriveIQ</span>
-        </div>
-        <div className="status-cluster">
-          <div className="status-pill">
-            <div className="status-dot" style={{ background: connected ? '#10b981' : '#ef4444' }} />
-            <span style={{ fontSize: 12, color: '#94a3b8' }}>
-              {connected ? 'Live score stream' : 'Reconnecting score stream'}
+        <div className="header-left">
+          <div className="topbar-logo">
+            <span>DriveIQ</span>
+          </div>
+          <div className="status-pill neutral-pill">
+            <span className={`severity-badge ${schemaOk && modelsOk ? 'severity-green' : 'severity-red'}`}>
+              schema_valid: {String(schemaOk)} | core_models_loaded: {String(modelsOk)}
             </span>
           </div>
-          <div className="status-pill neutral-pill">
-            <span className="mini-label">Score</span>
-            <span>{scoreLatencyMs != null ? `${scoreLatencyMs}ms` : '—'}</span>
-          </div>
-          <div className="status-pill neutral-pill">
-            <span className="mini-label">Coach</span>
-            <span>{coachLatencyMs != null ? `${coachLatencyMs}ms` : '—'}</span>
-          </div>
+        </div>
+        <div className="header-right">
+          {token ? (
+            <div className="driver-profile card" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="driver-avatar" style={{ background: '#22c55e' }}>✓</div>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#4ade80' }}>Verified Driver</div>
+                  <div style={{ fontSize: 12, color: '#94a3b8' }}>Session actively saved</div>
+                </div>
+              </div>
+              <button 
+                onClick={() => { localStorage.removeItem('driveiq_token'); setToken(''); setSessionSaveWarning(''); }} 
+                className="scenario-btn" 
+                style={{ background: '#ef4444', padding: '6px 12px', minHeight: 'auto', fontSize: '12px' }}>
+                Logout
+              </button>
+            </div>
+          ) : (
+            <div className="driver-profile card" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="driver-avatar" style={{ background: '#64748b' }}>?</div>
+                <div>
+                  <div style={{ fontWeight: 700, color: '#94a3b8' }}>Guest Driver</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Data won't be saved</div>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowAuthDialog(true)} 
+                className="scenario-btn" 
+                style={{ background: '#3b82f6', padding: '6px 12px', minHeight: 'auto', fontSize: '12px' }}>
+                Login / Register
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
+      {showAuthDialog && (
+        <LoginPanel 
+          onClose={() => setShowAuthDialog(false)} 
+          onLogin={(t) => { localStorage.setItem('driveiq_token', t); setToken(t); setSessionSaveWarning(''); setShowAuthDialog(false); }} 
+        />
+      )}
+
       <div className={healthClass}>{healthMessage}</div>
+      {sessionSaveWarning ? <div className="health-banner health-degraded">{sessionSaveWarning}</div> : null}
       {offlineMode ? (
         <div className="offline-controls">
           <button className="scenario-btn" onClick={reconnectBackend}>Retry Backend Connection</button>
         </div>
       ) : null}
 
-      {/* ── Dashboard grid ── */}
-      <main className="dashboard">
-        {/* Left column */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <ScoreGauge   score={score} />
-          <div className="card">
-            <div className="card-title">Demo Scenarios</div>
-            <div className="scenario-row">
-              <button className="scenario-btn scenario-green" onClick={() => runScenario('green')}>Green</button>
-              <button className="scenario-btn scenario-yellow" onClick={() => runScenario('yellow')}>Yellow</button>
-              <button className="scenario-btn scenario-red" onClick={() => runScenario('red')}>Red</button>
-            </div>
-            <p className="scenario-note">Use these presets to showcase severity transitions and coaching updates on demand.</p>
-          </div>
-          <CoachingPanel
-            tips={tips}
-            loading={tipsLoading}
-            message={coachMessage}
-            severity={coachSeverity}
-            source={coachSource}
-            fallback={coachFallback}
-            debugReason={coachDebugReason}
-            warning={coachWarning}
-          />
+      <section className="stats-bar">
+        <div className="card stat-card"><div className="card-title">Today&apos;s Score</div><strong>67</strong></div>
+        <div className="card stat-card"><div className="card-title">Best Score</div><strong>82</strong></div>
+        <div className="card stat-card"><div className="card-title">Trips This Week</div><strong>4</strong></div>
+        <div className="card stat-card"><div className="card-title">Fuel Saved</div><strong>2.3L</strong></div>
+      </section>
+
+      <main className="demo-layout">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          <button 
+            className="scenario-btn" 
+            style={{ flex: 1, background: !isLiveMode ? '#3b82f6' : 'rgba(255,255,255,0.05)' }}
+            onClick={() => setIsLiveMode(false)}
+          >
+            Post-Drive Full Analysis
+          </button>
+          <button 
+            className="scenario-btn" 
+            style={{ flex: 1, background: isLiveMode ? '#3b82f6' : 'rgba(255,255,255,0.05)', borderColor: isLiveMode ? '#60a5fa' : 'transparent' }}
+            onClick={() => {
+              setIsLiveMode(true)
+              setLivePoints([])
+              setLiveEvents([])
+              clockRef.current = 0
+              sessionStartedAtRef.current = Date.now()
+              prevFrameRef.current = null
+              streamCompleteRef.current = false
+            }}
+          >
+            Real-Time Live Mode
+          </button>
         </div>
 
-        {/* Right column */}
-        <div className="right-col">
-          <BehaviourVisualiser features={features} />
-          <TrendChart          history={scoreHistory} />
-          <FeatureTable        features={features} predictedFuelRate={predictedFuelRate} />
-        </div>
+        {!isLiveMode ? (
+          <>
+            <section className="card review-primary">
+              <div className="review-head">
+                <div className="card-title">Trip Review (Full Analysis)</div>
+                <button className="scenario-btn" onClick={() => window.alert('Report export coming soon')}>
+                  Export Report
+                </button>
+              </div>
+              <ReviewPanel
+                onAnalysisComplete={setReviewResult}
+                onWindowSelect={setSelectedWindow}
+                selectedTimestampSec={selectedWindow?.start_sec ?? selectedWindow?.timestamp_sec}
+              />
+            </section>
+            
+            {reviewResult && (
+              <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                <div className="card">
+                  <div className="card-title">Drive Segment Breakdown</div>
+                  <div style={{ height: 220, padding: 10 }}>
+                    <Bar 
+                      data={{
+                        labels: reviewResult.segments?.map((_, i) => `Segment ${i+1}`) || [],
+                        datasets: [{
+                          label: 'Score per Segment',
+                          data: reviewResult.segments?.map(s => s.avg_score) || [],
+                          backgroundColor: reviewResult.segments?.map(s => severityClass(s.severity || s.avg_score) === 'severity-green' ? '#10b981' : severityClass(s.severity || s.avg_score) === 'severity-yellow' ? '#f59e0b' : '#ef4444'),
+                          borderRadius: 4
+                        }]
+                      }} 
+                      options={{ maintainAspectRatio: false, plugins: { legend: { display: false } } }} 
+                    />
+                  </div>
+                </div>
+                
+                <div className="card">
+                  <div className="card-title">Detailed Trip Report</div>
+                  <div style={{ color: '#e2e8f0', fontSize: 14, lineHeight: '1.6', marginTop: 10 }}>
+                    <p><strong>Overall Journey Score:</strong> {reviewResult.avg_batch_score?.toFixed(1) || 'N/A'}</p>
+                    <p><strong>Total Duration:</strong> {Math.floor((reviewResult.duration_sec || 0)/60)}m {Math.floor((reviewResult.duration_sec || 0)%60)}s</p>
+                    <p style={{ marginTop: 10, color: '#94a3b8' }}>
+                      This trip consisted of {reviewResult.window_count} analyzed extraction windows. 
+                      {reviewResult.segments?.some(s => s.severity === 'red') 
+                        ? ' There were critical drops in Eco Score, primarily due to instances of tailgating and erratic velocity shifts across specific timeline segments. Review the red segments mapped above.'
+                        : ' Flow and speed variation remained smooth. The XGBoost framework confidently categorized your driving consistency as safe.'}
+                    </p>
+                  </div>
+                  <TrendChart points={reviewPoints} emptyMessage="Upload a clip to see score trend" />
+                </div>
+              </section>
+            )}
+          </>
+        ) : (
+          <>
+            <section className="card review-primary" style={{ border: '2px solid #3b82f6' }}>
+              <div className="review-head">
+                <div className="card-title">Live Dynamic Streaming</div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, color: '#94a3b8' }}>Load Video to Stream:</span>
+                  <input type="file" accept="video/mp4" onChange={(e) => {
+                    setLiveVideoFile(e.target.files?.[0])
+                    setLivePoints([])
+                    setLiveEvents([])
+                    setLiveScore(0)
+                    setLiveFeatures({ ...ZERO_FEATURES })
+                    setStreamActive(false)
+                    clockRef.current = 0
+                    sessionStartedAtRef.current = Date.now()
+                    prevFrameRef.current = null
+                    streamCompleteRef.current = false
+                    sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
+                  }} />
+                  {liveVideoUrl && !streamActive && (
+                    <button className="scenario-btn" style={{ background: '#10b981' }} onClick={() => {
+                      sessionStartedAtRef.current = Date.now()
+                      setStreamActive(true)
+                      liveVideoRef.current?.play()
+                    }}>
+                      Start Stream
+                    </button>
+                  )}
+                </div>
+              </div>
+              {liveVideoUrl ? (
+                <video 
+                  ref={liveVideoRef}
+                  src={liveVideoUrl} 
+                  controls
+                  muted
+                  onEnded={() => {
+                    setStreamActive(false)
+                    streamCompleteRef.current = true
+                    // Calculate mean score
+                    if (livePoints.length > 0) {
+                      const avg = livePoints.reduce((acc, p) => acc + p.score, 0) / livePoints.length
+                      setLiveScore(Math.round(avg))
+                      setLiveEvents(prev => [{ label: `Stream Complete. Mean Eco Score: ${Math.round(avg)}`, type: 'green', timestamp_sec: clockRef.current }, ...prev])
+                    }
+                  }}
+                  style={{ width: '100%', maxHeight: 400, borderRadius: 10, marginTop: 14, background: '#020617' }} 
+                />
+              ) : (
+                <div style={{ padding: 40, textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: 10, marginTop: 14, color: '#94a3b8' }}>
+                  Upload a mp4 file above to stream real video frames to the backend...
+                </div>
+              )}
+            </section>
+
+            <section className="layout-two-col">
+              <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
+
+              <div className="trip-history card">
+                <div className="card-title">Live Insights (Real-Time)</div>
+                <div className="history-list">
+                  {liveEvents.length > 0 ? (
+                    liveEvents.map((insight, idx) => {
+                      const m = Math.floor(insight.timestamp_sec / 60)
+                      const s = Math.floor(insight.timestamp_sec % 60)
+                      const tLabel = `${m}:${String(s).padStart(2, '0')}`
+                      return (
+                        <button
+                          key={idx}
+                          className="history-item"
+                          onClick={() => {
+                            if (liveVideoRef.current) {
+                              liveVideoRef.current.currentTime = insight.timestamp_sec
+                              liveVideoRef.current.play()
+                            }
+                          }}
+                          style={{ display: 'flex', justifyContent: 'space-between', textAlign: 'left' }}
+                        >
+                          <span><strong style={{ color: '#94a3b8' }}>[{tLabel}]</strong> {insight.label}</span>
+                          <span className={`severity-badge severity-${insight.type}`}>
+                            {insight.type.toUpperCase()}
+                          </span>
+                        </button>
+                      )
+                    })
+                  ) : (
+                    <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+                      {streamActive ? 'Analysing stream... no major infractions.' : 'Start stream to generate insights.'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section className="score-feature-grid">
+              <ScoreGauge score={displayedScore} />
+              <FeatureTable features={displayedFeatures} />
+            </section>
+
+            <section>
+              <CoachingPanel
+                tips={[selectedCoach]}
+                loading={false}
+                message={isLiveMode ? 'Live mode active. Real-time insights appear above.' : 'Coaching for selected review segment'}
+                severity={selectedSeverity}
+                source={selectedWindow?.score_source || 'review'}
+                fallback={false}
+                debugReason=""
+                warning=""
+                topIssue={selectedWindow?.dominant_issue || selectedWindow?.top_issue || ''}
+              />
+            </section>
+          </>
+        )}
+
+        <section className="card">
+          <div className="card-title">Behaviour Visualiser (Secondary)</div>
+          <div style={{ marginTop: 12 }}>
+            <BehaviourVisualiser features={displayedFeatures} />
+          </div>
+        </section>
       </main>
     </>
   )

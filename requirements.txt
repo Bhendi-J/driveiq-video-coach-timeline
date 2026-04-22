@@ -36,3 +36,6 @@ python-dotenv
 matplotlib
 seaborn
 Pillow
+pymongo
+PyJWT
+bcrypt

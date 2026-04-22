@@ -22,8 +22,8 @@ FARNEBACK_PARAMS = dict(
 )
 
 # Thresholds — tune these based on your video resolution / frame rate
-BRAKING_THRESH      = -1.5   # negative vertical flow (camera tilts forward when braking)
-LANE_CHANGE_THRESH  =  2.0   # horizontal flow magnitude
+BRAKING_THRESH      = -1.5   # preserved for compatibility/tuning reference
+LANE_CHANGE_THRESH  =  2.0   # preserved for compatibility/tuning reference
 
 
 def extract_flow_features(
@@ -41,8 +41,8 @@ def extract_flow_features(
         dict with keys:
             mean_flow         (float)  — mean magnitude of all flow vectors
             variance          (float)  — variance of flow magnitudes
-            braking_flag      (int)    — 1 if strong negative y-flow (deceleration)
-            lane_change_flag  (int)    — 1 if strong x-flow asymmetry
+            braking_flag      (float)  — normalized braking intensity ratio [0, 1]
+            lane_change_flag  (float)  — normalized lane-change intensity ratio [0, 1]
     """
     # Convert to grayscale
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -62,22 +62,26 @@ def extract_flow_features(
     mean_flow = float(np.mean(magnitude))
     variance  = float(np.var(magnitude))
 
-    # Braking: strong uniform negative y-flow in the central crop
+    # Braking ratio: normalized negative y-flow intensity in the central crop.
     h, w = fy.shape
     central_fy = fy[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
-    braking_flag = int(np.mean(central_fy) < BRAKING_THRESH)
+    mean_central_fy = float(np.mean(central_fy))
+    if mean_central_fy < 0.0:
+        braking_flag = min(abs(mean_central_fy) / 3.0, 1.0)
+    else:
+        braking_flag = 0.0
 
-    # Lane change: asymmetric horizontal flow (left vs right halves differ)
+    # Lane-change ratio: normalized horizontal asymmetry.
     left_fx  = fx[:, : w // 2]
     right_fx = fx[:, w // 2 :]
     x_asymmetry = abs(float(np.mean(left_fx)) - float(np.mean(right_fx)))
-    lane_change_flag = int(x_asymmetry > LANE_CHANGE_THRESH)
+    lane_change_flag = min(x_asymmetry / 4.0, 1.0)
 
     return {
         "mean_flow":        round(mean_flow, 4),
         "variance":         round(variance, 4),
-        "braking_flag":     braking_flag,
-        "lane_change_flag": lane_change_flag,
+        "braking_flag":     round(float(braking_flag), 4),
+        "lane_change_flag": round(float(lane_change_flag), 4),
     }
 
 

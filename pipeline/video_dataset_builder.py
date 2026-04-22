@@ -68,7 +68,11 @@ def _safe_float(x, default: float = 0.0) -> float:
         return default
 
 
-def process_video(video_path: Path, sample_every: int, max_frames_per_video: int | None) -> pd.DataFrame:
+def extract_per_frame_features(
+    video_path: Path,
+    sample_every: int,
+    max_frames_per_video: int | None = None,
+) -> pd.DataFrame:
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"[video_builder] WARNING: unable to open {video_path}")
@@ -143,6 +147,11 @@ def process_video(video_path: Path, sample_every: int, max_frames_per_video: int
     return pd.DataFrame(rows)
 
 
+def process_video(video_path: Path, sample_every: int, max_frames_per_video: int | None) -> pd.DataFrame:
+    """Backward-compatible wrapper for per-frame feature extraction."""
+    return extract_per_frame_features(video_path, sample_every, max_frames_per_video)
+
+
 def _mode_or_default(series: pd.Series, default: float = 0.0) -> float:
     s = pd.to_numeric(series, errors="coerce").dropna()
     if s.empty:
@@ -152,21 +161,30 @@ def _mode_or_default(series: pd.Series, default: float = 0.0) -> float:
 
 
 def _proxy_eco_score(row: dict) -> float:
-    # Rebalanced proxy target to avoid score collapse near zero.
-    # - Higher base score
-    # - Softer linear penalties
-    # - Variance penalty uses sqrt() so large flow spikes do not dominate
-    score = 92.0
-    score -= float(row["proximity_score"]) * 18.0
-    score -= float(row["mean_flow"]) * 2.2
-    score -= float(np.sqrt(max(float(row["flow_variance"]), 0.0))) * 1.1
-    score -= float(row["braking_flag"]) * 8.0
-    score -= float(row["lane_change_flag"]) * 6.0
-    score -= float(row["pedestrian_flag"]) * 3.0
+    # More sensitive proxy target so neighboring windows separate more clearly.
+    # This intentionally amplifies unsafe maneuvers and motion instability.
+    proximity = float(row["proximity_score"])
+    mean_flow = float(row["mean_flow"])
+    flow_variance = max(float(row["flow_variance"]), 0.0)
+    braking = float(row["braking_flag"])
+    lane = float(row["lane_change_flag"])
+    pedestrian = float(row["pedestrian_flag"])
 
-    # Add floor before clipping so the target keeps useful spread
-    # and does not collapse to mostly zeros.
-    score = max(15.0, score)
+    score = 96.0
+    score -= proximity * 36.0
+    score -= mean_flow * 12.0
+    score -= np.sqrt(flow_variance) * 42.0
+    score -= flow_variance * 12.0
+    score -= braking * 22.0
+    score -= lane * 18.0
+    score -= pedestrian * 10.0
+
+    # Interaction penalties increase sensitivity when multiple risks co-occur.
+    score -= proximity * braking * 10.0
+    score -= mean_flow * lane * 6.0
+
+    # Keep a modest floor to preserve learnable low-score spread.
+    score = max(5.0, score)
     return float(max(0.0, min(100.0, score)))
 
 
@@ -252,6 +270,11 @@ def aggregate_windows(frames_df: pd.DataFrame, window_size: int, stride: int) ->
             row["flow_variance"] = float(seg["flow_variance"].mean())
             row["braking_flag"] = float((seg["braking_flag"] > 0).mean())
             row["lane_change_flag"] = float((seg["lane_change_flag"] > 0).mean())
+            row["braking_flag_ratio"] = row["braking_flag"]
+            row["lane_change_flag_ratio"] = row["lane_change_flag"]
+            row["proximity_score_mean"] = float(seg["proximity_score"].mean())
+            row["mean_flow_mean"] = float(seg["mean_flow"].mean())
+            row["timestamp_sec"] = float(seg["timestamp_sec"].mean())
 
             # Richer window stats (offline quality features; core runtime schema remains unchanged).
             for c in ["vehicle_count", "proximity_score", "mean_flow", "flow_variance"]:

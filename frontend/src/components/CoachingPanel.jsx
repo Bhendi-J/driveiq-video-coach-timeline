@@ -1,6 +1,7 @@
-export default function CoachingPanel({ tips, loading, message, severity, source, fallback, debugReason, warning }) {
+export default function CoachingPanel({ tips, loading, message, severity, source, fallback, debugReason, warning, topIssue }) {
   const sev = ['green', 'yellow', 'red'].includes(severity) ? severity : 'yellow'
   const coachSource = source || 'rules'
+  const issueLabel = topIssue ? String(topIssue).replaceAll('_', ' ') : null
 
   return (
     <div className="card">
@@ -12,6 +13,7 @@ export default function CoachingPanel({ tips, loading, message, severity, source
         <span className="meta-chip">source: {coachSource}</span>
         {fallback ? <span className="meta-chip meta-chip-warn">fallback</span> : null}
       </div>
+      {issueLabel ? <div className="issue-pill">Issue: {issueLabel}</div> : null}
       {warning ? <p className="coach-warning">{warning}</p> : null}
       <p className="coach-message">{message || 'Keep your driving smooth and consistent.'}</p>
       {loading ? (

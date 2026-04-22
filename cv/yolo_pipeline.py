@@ -12,6 +12,10 @@ Usage (as module):
 
 import numpy as np
 import argparse
+import logging
+import os
+import time
+import threading
 from pathlib import Path
 
 # YOLOv8 class IDs (COCO)
@@ -20,14 +24,24 @@ PERSON_CLASS_ID   = 0
 
 # Lazy-load model to avoid import cost when used as a module
 _yolo_model = None
+_yolo_lock = threading.Lock()
+DEBUG_CV = os.environ.get("DRIVEIQ_CV_DEBUG", "0") == "1"
+logger = logging.getLogger("driveiq.cv.yolo")
 
 
 def get_yolo_model():
     global _yolo_model
-    if _yolo_model is None:
+    if _yolo_model is not None:
+        return _yolo_model
+    with _yolo_lock:
+        # Re-check after acquiring lock (another thread may have loaded it)
+        if _yolo_model is not None:
+            return _yolo_model
+        t0 = time.perf_counter()
         from ultralytics import YOLO
         # Use nano model (fastest) to meet latency target
         _yolo_model = YOLO("yolov8n.pt")
+        logger.info("yolo_model_loaded elapsed_ms=%.1f", (time.perf_counter() - t0) * 1000.0)
     return _yolo_model
 
 
@@ -45,6 +59,7 @@ def extract_yolo_features(frame: np.ndarray, conf_threshold: float = 0.4) -> dic
             proximity_score (float) — area of closest vehicle bbox as % of frame area
             pedestrian_flag (int)   — 1 if any pedestrian detected, else 0
     """
+    t0 = time.perf_counter()
     model = get_yolo_model()
     frame_area = frame.shape[0] * frame.shape[1]
 
@@ -71,11 +86,23 @@ def extract_yolo_features(frame: np.ndarray, conf_threshold: float = 0.4) -> dic
 
     proximity_score = round(max_bbox_area / frame_area, 4) if frame_area > 0 else 0.0
 
-    return {
+    out = {
         "vehicle_count":   vehicle_count,
         "proximity_score": proximity_score,
         "pedestrian_flag": pedestrian_flag,
     }
+
+    if DEBUG_CV:
+        logger.info(
+            "yolo_infer frame=%sx%s conf=%.2f elapsed_ms=%.1f out=%s",
+            frame.shape[1],
+            frame.shape[0],
+            conf_threshold,
+            (time.perf_counter() - t0) * 1000.0,
+            out,
+        )
+
+    return out
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────
