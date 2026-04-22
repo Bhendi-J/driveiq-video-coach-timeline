@@ -8,29 +8,25 @@ function formatTime(sec) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-function formatRangeTime(sec) {
-  const total = Math.max(0, Math.floor(Number(sec) || 0))
-  const m = Math.floor(total / 60)
-  const s = total % 60
-  return `${m}:${String(s).padStart(2, '0')}`
+function formatRange(start, end) {
+  const s = formatTime(start)
+  const e = formatTime(end)
+  return s === e ? `${s} - ${formatTime(Number(start) + 2)}` : `${s} - ${e}`
 }
 
-function scoreColor(severity) {
-  if (severity === 'green') return '#10b981'
-  if (severity === 'yellow') return '#f59e0b'
-  return '#ef4444'
+function severityBadge(sev) {
+  const map = { green: 'green', yellow: 'yellow', red: 'red' }
+  return `severity-badge severity-${map[sev] || 'yellow'}`
 }
 
-function severityRowBg(severity, isSelected) {
-  if (isSelected) return '#1e293b'
-  if (severity === 'green') return 'rgba(16,185,129,0.10)'
-  if (severity === 'yellow') return 'rgba(245,158,11,0.10)'
-  return 'rgba(239,68,68,0.10)'
+function toNum(value, fallback = 0) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
 }
 
 function quantile(values, q) {
   const sorted = [...values].sort((a, b) => a - b)
-  if (sorted.length === 0) return 0
+  if (!sorted.length) return 0
   const pos = (sorted.length - 1) * q
   const base = Math.floor(pos)
   const rest = pos - base
@@ -43,18 +39,13 @@ function deriveSeverityThresholds(windows = []) {
     .map((w) => toNum(w?.score, Number.NaN))
     .filter((v) => Number.isFinite(v))
 
-  if (scores.length < 3) {
-    return { yellowMin: 50, greenMin: 75, mode: 'fixed_75_50_fallback' }
-  }
-
+  if (scores.length < 3) return { yellowMin: 50, greenMin: 75, mode: 'fixed' }
   const yellowMin = quantile(scores, 1 / 3)
   const greenMin = quantile(scores, 2 / 3)
-
   if (!Number.isFinite(yellowMin) || !Number.isFinite(greenMin) || Math.abs(greenMin - yellowMin) < 1e-6) {
-    return { yellowMin: 50, greenMin: 75, mode: 'fixed_75_50_fallback' }
+    return { yellowMin: 50, greenMin: 75, mode: 'fixed' }
   }
-
-  return { yellowMin, greenMin, mode: 'dynamic_tertiles' }
+  return { yellowMin, greenMin, mode: 'dynamic' }
 }
 
 function classifySeverity(score, thresholds) {
@@ -65,27 +56,21 @@ function classifySeverity(score, thresholds) {
   return 'red'
 }
 
-function toNum(value, fallback = 0) {
-  const n = Number(value)
-  return Number.isFinite(n) ? n : fallback
-}
-
-function mostFrequentValue(items, key, fallback = '') {
+function mostFrequent(items, key, fallback = '') {
   const counts = new Map()
-  const firstIndex = new Map()
+  const firstIdx = new Map()
   items.forEach((item, idx) => {
-    const value = String(item?.[key] ?? fallback)
-    counts.set(value, (counts.get(value) || 0) + 1)
-    if (!firstIndex.has(value)) firstIndex.set(value, idx)
+    const val = String(item?.[key] ?? fallback)
+    counts.set(val, (counts.get(val) || 0) + 1)
+    if (!firstIdx.has(val)) firstIdx.set(val, idx)
   })
-
   let best = fallback
   let bestCount = -1
   let bestIdx = Number.MAX_SAFE_INTEGER
-  counts.forEach((count, value) => {
-    const idx = firstIndex.get(value) ?? Number.MAX_SAFE_INTEGER
+  counts.forEach((count, val) => {
+    const idx = firstIdx.get(val) ?? Number.MAX_SAFE_INTEGER
     if (count > bestCount || (count === bestCount && idx < bestIdx)) {
-      best = value
+      best = val
       bestCount = count
       bestIdx = idx
     }
@@ -98,32 +83,27 @@ function buildSegment(windows, thresholds) {
   const last = windows[windows.length - 1]
   const scoreSum = windows.reduce((acc, w) => acc + toNum(w?.score), 0)
   const avgScore = scoreSum / Math.max(1, windows.length)
-  const dominantIssue = mostFrequentValue(windows, 'top_issue', 'smooth_driving')
+  const dominantIssue = mostFrequent(windows, 'top_issue', 'smooth_driving')
   const severity = classifySeverity(avgScore, thresholds)
-  const worstWindow = windows.reduce(
-    (worst, w) => (toNum(w?.score) < toNum(worst?.score, Infinity) ? w : worst),
+  const worst = windows.reduce(
+    (w, cur) => (toNum(cur?.score) < toNum(w?.score, Infinity) ? cur : w),
     windows[0],
   )
-  const startSec = toNum(first?.timestamp_sec)
-  const endSec = toNum(last?.timestamp_sec)
-
-  const mean = (key, fallback = 0) =>
-    windows.reduce((acc, w) => acc + toNum(w?.[key], fallback), 0) / Math.max(1, windows.length)
+  const mean = (key, fb = 0) =>
+    windows.reduce((acc, w) => acc + toNum(w?.[key], fb), 0) / Math.max(1, windows.length)
 
   return {
-    start_sec: startSec,
-    end_sec: endSec,
+    start_sec: toNum(first?.timestamp_sec),
+    end_sec: toNum(last?.timestamp_sec),
     avg_score: Number(avgScore.toFixed(2)),
     dominant_issue: dominantIssue,
     severity,
-    coach_note: worstWindow?.coach_note || 'Maintain smooth, consistent driving.',
+    coach_note: worst?.coach_note || 'Maintain smooth, consistent driving.',
     window_count: windows.length,
-
-    // Compatibility fields for existing selected state consumers.
-    timestamp_sec: startSec,
+    timestamp_sec: toNum(first?.timestamp_sec),
     score: Number(avgScore.toFixed(2)),
     top_issue: dominantIssue,
-    score_source: mostFrequentValue(windows, 'score_source', 'xgb'),
+    score_source: mostFrequent(windows, 'score_source', 'xgb'),
     braking_flag_ratio: mean('braking_flag_ratio', mean('braking_flag')),
     lane_change_flag_ratio: mean('lane_change_flag_ratio', mean('lane_change_flag')),
     proximity_score_mean: mean('proximity_score_mean', mean('proximity_score')),
@@ -133,35 +113,59 @@ function buildSegment(windows, thresholds) {
   }
 }
 
-export function groupSegments(windows = []) {
-  if (!Array.isArray(windows) || windows.length === 0) return []
-  const ordered = [...windows].sort((a, b) => toNum(a?.timestamp_sec) - toNum(b?.timestamp_sec))
-  const thresholds = deriveSeverityThresholds(ordered)
+function buildTimelineModules(segments = []) {
+  if (!segments.length) return []
+  const moduleSize = 4
+  const modules = []
 
-  const segments = []
-  let current = [ordered[0]]
-  let runningScoreSum = toNum(ordered[0]?.score)
-
-  for (let i = 1; i < ordered.length; i += 1) {
-    const prev = ordered[i - 1]
-    const win = ordered[i]
-    const runningAvg = runningScoreSum / Math.max(1, current.length)
-
-    const issueChanged = String(win?.top_issue ?? '') !== String(prev?.top_issue ?? '')
-    const scoreJumped = Math.abs(toNum(win?.score) - runningAvg) > 10 // Relaxed sensitivity to avoid fragmentation
-    const timeBucketFull = (toNum(win?.timestamp_sec) - toNum(current[0]?.timestamp_sec)) >= 5 // Max 5 seconds per block
-
-    if (issueChanged || scoreJumped || timeBucketFull) {
-      segments.push(buildSegment(current, thresholds))
-      current = [win]
-      runningScoreSum = toNum(win?.score)
-      continue
-    }
-
-    current.push(win)
-    runningScoreSum += toNum(win?.score)
+  for (let i = 0; i < segments.length; i += moduleSize) {
+    const chunk = segments.slice(i, i + moduleSize)
+    const moduleIndex = Math.floor(i / moduleSize) + 1
+    modules.push({
+      id: `module-${moduleIndex}`,
+      title: `Module ${String(moduleIndex).padStart(2, '0')}`,
+      lessons: chunk.map((segment, idx) => {
+        const issue = String(segment.dominant_issue || 'smooth driving').replaceAll('_', ' ')
+        const duration = Math.max(1, Math.round(Number(segment.end_sec) - Number(segment.start_sec)))
+        return {
+          id: `${segment.start_sec}-${segment.end_sec}-${idx}`,
+          label: `Lesson ${String(i + idx + 1).padStart(2, '0')}`,
+          title: `Video Focus - ${issue}`,
+          segment,
+          duration,
+        }
+      }),
+    })
   }
 
+  return modules
+}
+
+export function groupSegments(windows = []) {
+  if (!Array.isArray(windows) || !windows.length) return []
+  const ordered = [...windows].sort((a, b) => toNum(a?.timestamp_sec) - toNum(b?.timestamp_sec))
+  const thresholds = deriveSeverityThresholds(ordered)
+  const segments = []
+  let current = [ordered[0]]
+  let runningSum = toNum(ordered[0]?.score)
+
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1]
+    const win = ordered[i]
+    const runningAvg = runningSum / Math.max(1, current.length)
+    const issueChanged = String(win?.top_issue ?? '') !== String(prev?.top_issue ?? '')
+    const scoreJumped = Math.abs(toNum(win?.score) - runningAvg) > 10
+    const bucketFull = (toNum(win?.timestamp_sec) - toNum(current[0]?.timestamp_sec)) >= 5
+
+    if (issueChanged || scoreJumped || bucketFull) {
+      segments.push(buildSegment(current, thresholds))
+      current = [win]
+      runningSum = toNum(win?.score)
+      continue
+    }
+    current.push(win)
+    runningSum += toNum(win?.score)
+  }
   if (current.length) segments.push(buildSegment(current, thresholds))
   return segments
 }
@@ -171,6 +175,9 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [expandedModules, setExpandedModules] = useState({})
+  const [previewPlayback, setPreviewPlayback] = useState({ current: 0, duration: 0 })
+
   const videoRef = useRef(null)
 
   const videoUrl = useMemo(() => {
@@ -178,25 +185,46 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
     return URL.createObjectURL(file)
   }, [file])
 
-  useEffect(() => {
-    return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl)
-    }
+  const timelineModules = useMemo(() => buildTimelineModules(result?.segments || []), [result])
+  const previewProgress = previewPlayback.duration > 0
+    ? Math.min(100, (previewPlayback.current / previewPlayback.duration) * 100)
+    : 0
+
+  useEffect(() => () => {
+    if (videoUrl) URL.revokeObjectURL(videoUrl)
   }, [videoUrl])
+
+  useEffect(() => {
+    if (!timelineModules.length) {
+      setExpandedModules({})
+      return
+    }
+
+    setExpandedModules((prev) => {
+      const next = { ...prev }
+      timelineModules.forEach((module, idx) => {
+        if (typeof next[module.id] !== 'boolean') next[module.id] = idx === 0
+      })
+      return next
+    })
+  }, [timelineModules])
 
   const onFileChange = (e) => {
     const picked = e.target.files?.[0] || null
     setFile(picked)
     setResult(null)
     setError('')
+    setExpandedModules({})
+    setPreviewPlayback({ current: 0, duration: 0 })
     if (onAnalysisComplete) onAnalysisComplete(null)
   }
 
   const analyse = async () => {
     if (!file) {
-      setError('Please choose an mp4 file first.')
+      setError('Select an mp4 file first.')
       return
     }
+
     setLoading(true)
     setError('')
     setResult(null)
@@ -207,13 +235,14 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
       const { data } = await axios.post('/api/review', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
+
       const segments = groupSegments(data?.windows || [])
       const nextResult = { ...data, segments }
       setResult(nextResult)
       if (onAnalysisComplete) onAnalysisComplete(nextResult)
       if (onWindowSelect && segments.length) onWindowSelect(segments[0])
     } catch (e) {
-      const msg = e?.response?.data?.message || e?.response?.data?.error || 'Review failed.'
+      const msg = e?.response?.data?.message || e?.response?.data?.error || 'Analysis failed.'
       setError(msg)
     } finally {
       setLoading(false)
@@ -222,107 +251,118 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
 
   const seekTo = (windowItem) => {
     if (!videoRef.current) return
-    const sec = windowItem?.start_sec ?? windowItem?.timestamp_sec
-    videoRef.current.currentTime = Number(sec) || 0
+    const target = Number(windowItem?.start_sec ?? windowItem?.timestamp_sec) || 0
+    videoRef.current.currentTime = target
     videoRef.current.play().catch(() => {})
     if (onWindowSelect) onWindowSelect(windowItem)
   }
 
-  const isFlatResult = useMemo(() => {
-    const segments = result?.segments || []
-    if (segments.length < 2) return false
-    const scores = segments.map((s) => Number(s?.avg_score ?? 0))
-    const minScore = Math.min(...scores)
-    const maxScore = Math.max(...scores)
-    return (maxScore - minScore) <= 5
-  }, [result])
+  const toggleModule = (moduleId) => {
+    setExpandedModules((prev) => ({ ...prev, [moduleId]: !prev[moduleId] }))
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <input type="file" accept="video/mp4" onChange={onFileChange} />
-        <button className="scenario-btn" onClick={analyse} disabled={loading || !file}>
+    <div className="review-panel">
+      <div className="file-input-wrap review-upload-row">
+        <input type="file" accept="video/mp4" onChange={onFileChange} id="review-file-input" />
+        <button
+          className="btn btn-primary"
+          onClick={analyse}
+          disabled={loading || !file}
+          id="review-analyse-btn"
+        >
           {loading ? 'Analysing...' : 'Analyse'}
         </button>
-        {loading ? <span style={{ color: '#94a3b8', fontSize: 13 }}>Processing video windows...</span> : null}
+        {loading ? <span className="text-mute">Processing extraction windows...</span> : null}
       </div>
 
-      {error ? <div style={{ color: '#fca5a5', fontSize: 13 }}>{error}</div> : null}
+      {error ? <div className="form-error">{error}</div> : null}
 
       {result ? (
-        <div style={{ display: 'grid', gap: 14, gridTemplateColumns: '1.2fr 1fr' }}>
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Uploaded Clip</div>
-            {videoUrl ? (
-              <video
-                ref={videoRef}
-                src={videoUrl}
-                controls
-                style={{ width: '100%', maxHeight: 360, borderRadius: 10, background: '#020617' }}
-              />
-            ) : null}
-            <p className="scenario-note" style={{ marginTop: 10 }}>
-              Duration: {formatTime(result.duration_sec)} • Windows: {result.window_count}
-            </p>
-          </div>
-
-          <div className="card" style={{ margin: 0 }}>
-            <div className="card-title">Segment Review</div>
-            <div style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {(result.segments || []).map((segment, idx) => {
-                const isSelected = Number(selectedTimestampSec) === Number(segment.start_sec)
-                const durationSec = Math.max(1, Math.round(Number(segment.end_sec) - Number(segment.start_sec)))
-                return (
-                <button
-                  key={`${segment.start_sec}-${segment.end_sec}-${idx}`}
-                  onClick={() => seekTo(segment)}
-                  style={{
-                    textAlign: 'left',
-                    border: '1px solid rgba(148,163,184,0.2)',
-                    background: severityRowBg(segment.severity, isSelected),
-                    color: '#e2e8f0',
-                    borderRadius: 10,
-                    padding: '10px 12px',
-                    cursor: 'pointer',
+        <div className="grid-2-asym review-results-grid">
+          <article className="video-card">
+            <div className="video-card-media">
+              {videoUrl ? (
+                <video
+                  ref={videoRef}
+                  src={videoUrl}
+                  controls
+                  onLoadedMetadata={(e) => {
+                    const duration = Number(e.currentTarget.duration) || 0
+                    setPreviewPlayback({ current: 0, duration })
                   }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    <strong>
-                      {formatRangeTime(segment.start_sec)}
-                      {formatRangeTime(segment.start_sec) !== formatRangeTime(segment.end_sec)
-                        ? ` - ${formatRangeTime(segment.end_sec)}`
-                        : ` - ${formatRangeTime(segment.start_sec + 2)}`}
-                    </strong>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        padding: '2px 8px',
-                        borderRadius: 999,
-                        background: scoreColor(segment.severity),
-                        color: '#041014',
-                        fontWeight: 700,
-                      }}
+                  onTimeUpdate={(e) => {
+                    const current = Number(e.currentTarget.currentTime) || 0
+                    const duration = Number(e.currentTarget.duration) || 0
+                    setPreviewPlayback({ current, duration })
+                  }}
+                />
+              ) : (
+                <div className="video-placeholder">Video preview unavailable.</div>
+              )}
+            </div>
+            <div className="video-card-body">
+              <h3 className="video-card-title line-clamp-2">
+                {file?.name || 'Uploaded Drive Session'}
+              </h3>
+              <div className="video-card-meta">
+                <span>{formatTime(result.duration_sec)} duration</span>
+                <span>{result.window_count} windows</span>
+                <span>{formatTime(previewPlayback.current)} watched</span>
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${previewProgress}%` }} />
+              </div>
+            </div>
+          </article>
+
+          <article className="card timeline-card">
+            <div className="card-title">Structured Timeline</div>
+            <div className="timeline-collection">
+              {timelineModules.map((module) => {
+                const expanded = Boolean(expandedModules[module.id])
+                return (
+                  <div className={`timeline-module ${expanded ? 'open' : ''}`} key={module.id}>
+                    <button
+                      type="button"
+                      className={`timeline-module-head ${expanded ? 'expanded' : ''}`}
+                      onClick={() => toggleModule(module.id)}
                     >
-                      {segment.avg_score}
-                    </span>
+                      <span className="timeline-module-title">{module.title}</span>
+                      <span className="timeline-module-count">{module.lessons.length} lessons</span>
+                    </button>
+
+                    <div
+                      className={`timeline-module-body ${expanded ? 'expanded' : ''}`}
+                      style={{ maxHeight: expanded ? `${module.lessons.length * 144 + 32}px` : '0px' }}
+                    >
+                      {module.lessons.map((lesson) => {
+                        const seg = lesson.segment
+                        const isSelected = Number(selectedTimestampSec) === Number(seg.start_sec)
+                        return (
+                          <div className="timeline-lesson" key={lesson.id}>
+                            <span className="timeline-lesson-label">{lesson.label}</span>
+                            <button
+                              type="button"
+                              className={`timeline-video-item ${isSelected ? 'selected' : ''}`}
+                              onClick={() => seekTo(seg)}
+                            >
+                              <span className="line-clamp-2">{lesson.title}</span>
+                              <div className="timeline-video-meta">
+                                <span>{formatRange(seg.start_sec, seg.end_sec)} | {lesson.duration}s</span>
+                                <span>{seg.window_count} windows</span>
+                                <span className={severityBadge(seg.severity)}>{seg.severity}</span>
+                              </div>
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>
-                    Issue: {String(segment.dominant_issue || 'smooth_driving').replaceAll('_', ' ')}
-                  </div>
-                  <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
-                    {durationSec} seconds | {segment.window_count} windows
-                  </div>
-                  <p className="coach-note">{segment.coach_note}</p>
-                </button>
                 )
               })}
             </div>
-            {isFlatResult ? (
-              <p className="timeline-disclaimer">
-                Score variation is low for this clip — try a clip with mixed traffic conditions for full timeline spread.
-              </p>
-            ) : null}
-          </div>
+          </article>
         </div>
       ) : null}
     </div>

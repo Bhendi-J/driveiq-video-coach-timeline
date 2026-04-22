@@ -11,32 +11,32 @@ import {
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Filler, Tooltip)
 
+// Inline reference lines plugin - avoids re-registration issues
 const referenceLinesPlugin = {
-  id: 'referenceLines',
-  afterDraw(chart, _args, pluginOptions) {
+  id: 'diq_referenceLines',
+  afterDraw(chart, _args, opts) {
     const yScale = chart.scales?.y
-    const chartArea = chart.chartArea
-    if (!yScale || !chartArea) return
-
-    const lines = pluginOptions?.lines || []
+    const area = chart.chartArea
+    if (!yScale || !area) return
     const { ctx } = chart
-    ctx.save()
-    ctx.font = '11px Space Grotesk, sans-serif'
-    lines.forEach((line) => {
+    ctx.save();
+    (opts?.lines || []).forEach((line) => {
       const y = yScale.getPixelForValue(line.value)
       ctx.strokeStyle = line.color
-      ctx.setLineDash([6, 6])
+      ctx.setLineDash([4, 6])
       ctx.lineWidth = 1
+      ctx.globalAlpha = 0.4
       ctx.beginPath()
-      ctx.moveTo(chartArea.left, y)
-      ctx.lineTo(chartArea.right, y)
+      ctx.moveTo(area.left, y)
+      ctx.lineTo(area.right, y)
       ctx.stroke()
-
       ctx.setLineDash([])
+      ctx.globalAlpha = 0.5
       ctx.fillStyle = line.color
+      ctx.font = '10px Inter, sans-serif'
       ctx.textAlign = 'right'
       ctx.textBaseline = 'bottom'
-      ctx.fillText(line.label, chartArea.right - 4, y - 4)
+      ctx.fillText(line.label, area.right - 4, y - 3)
     })
     ctx.restore()
   },
@@ -51,13 +51,13 @@ function formatTime(sec) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-function severityPointColor(severity) {
-  if (severity === 'green') return '#10b981'
-  if (severity === 'yellow') return '#f59e0b'
-  return '#ef4444'
+function pointColor(severity) {
+  if (severity === 'green') return 'rgba(234, 234, 234, 0.9)'
+  if (severity === 'yellow') return 'rgba(234, 234, 234, 0.66)'
+  return 'rgba(234, 234, 234, 0.44)'
 }
 
-export default function TrendChart({ points = [], emptyMessage = 'Upload a clip to see score trend' }) {
+export default function TrendChart({ points = [], emptyMessage = 'No data yet' }) {
   if (!points.length) {
     return (
       <div className="card">
@@ -72,16 +72,17 @@ export default function TrendChart({ points = [], emptyMessage = 'Upload a clip 
   const data = {
     labels,
     datasets: [{
-      label: 'Segment Avg Eco Score',
+      label: 'Eco Score',
       data: points.map((p) => Number(p.avg_score ?? p.score ?? 0)),
-      borderColor: '#3b82f6',
-      backgroundColor: 'rgba(59,130,246,0.08)',
+      borderColor: 'rgba(234, 234, 234, 0.28)',
+      backgroundColor: 'rgba(234, 234, 234, 0.06)',
       fill: true,
-      tension: 0.4,
+      tension: 0.45,
       pointRadius: 3,
-      pointBackgroundColor: points.map((p) => severityPointColor(p.severity)),
-      pointBorderColor: points.map((p) => severityPointColor(p.severity)),
+      pointBackgroundColor: points.map((p) => pointColor(p.severity)),
+      pointBorderColor: points.map((p) => pointColor(p.severity)),
       pointHoverRadius: 5,
+      borderWidth: 1.5,
     }]
   }
 
@@ -89,21 +90,41 @@ export default function TrendChart({ points = [], emptyMessage = 'Upload a clip 
     responsive: true,
     maintainAspectRatio: false,
     scales: {
-      y: { min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.05)' },
-           ticks: { color: '#64748b', font: { size: 11 } } },
-      x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 10 } } },
+      y: {
+        min: 0,
+        max: 100,
+        grid: { color: 'rgba(234, 234, 234, 0.06)' },
+        ticks: { color: 'rgba(234, 234, 234, 0.48)', font: { size: 10, family: 'Inter' }, stepSize: 25 },
+        border: { color: 'transparent' },
+      },
+      x: {
+        grid: { display: false },
+        ticks: { color: 'rgba(234, 234, 234, 0.48)', font: { size: 10, family: 'Inter' }, maxTicksLimit: 8 },
+        border: { color: 'transparent' },
+      },
     },
     plugins: {
       legend: { display: false },
-      tooltip: { mode: 'index', intersect: false },
-      referenceLines: {
+      tooltip: {
+        mode: 'index',
+        intersect: false,
+        backgroundColor: '#1a1a1a',
+        borderColor: '#2a2a2a',
+        borderWidth: 1,
+        titleColor: 'rgba(234, 234, 234, 0.7)',
+        bodyColor: '#eaeaea',
+        titleFont: { size: 10, family: 'Inter' },
+        bodyFont: { size: 12, family: 'Inter', weight: '600' },
+        padding: 10,
+      },
+      diq_referenceLines: {
         lines: [
-          { value: 65, label: 'Good', color: '#10b981' },
-          { value: 40, label: 'Poor', color: '#ef4444' },
+          { value: 75, label: 'Target', color: 'rgba(234, 234, 234, 0.52)' },
+          { value: 50, label: 'Baseline', color: 'rgba(234, 234, 234, 0.35)' },
         ],
       },
     },
-    animation: { duration: 300 },
+    animation: { duration: 250 },
   }
 
   return (

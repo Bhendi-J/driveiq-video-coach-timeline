@@ -3,29 +3,37 @@ import { Chart as ChartJS, ArcElement, Tooltip } from 'chart.js'
 
 ChartJS.register(ArcElement, Tooltip)
 
-const scoreColor = (s) =>
-  s >= 80 ? '#10b981' : s >= 50 ? '#f59e0b' : '#ef4444'
+function scoreColor(s) {
+  if (s >= 75) return 'rgba(234, 234, 234, 0.9)'
+  if (s >= 50) return 'rgba(234, 234, 234, 0.66)'
+  return 'rgba(234, 234, 234, 0.44)'
+}
+
+function scoreLabel(s) {
+  if (s >= 75) return 'Stable'
+  if (s >= 50) return 'Balanced'
+  return 'Needs Work'
+}
 
 export default function ScoreGauge({ score }) {
   const s = Math.round(score ?? 0)
   const color = scoreColor(s)
-  const severityLabel = s >= 80 ? 'Good Driving' : s >= 50 ? 'Needs Attention' : 'Poor — Act Now'
 
   const data = {
     datasets: [{
       data: [s, 100 - s],
-      backgroundColor: [color, 'rgba(255,255,255,0.05)'],
+      backgroundColor: [color, 'rgba(234, 234, 234, 0.08)'],
       borderWidth: 0,
-      borderRadius: 6,
-      circumference: 270,
-      rotation: -135,
+      borderRadius: 10,
+      circumference: 240,
+      rotation: -120,
     }]
   }
 
   const options = {
-    cutout: '80%',
+    cutout: '82%',
     plugins: { tooltip: { enabled: false } },
-    animation: { animateRotate: true, duration: 600 },
+    animation: { animateRotate: true, duration: 500 },
     responsive: true,
     maintainAspectRatio: false,
   }
@@ -37,8 +45,8 @@ export default function ScoreGauge({ score }) {
         <Doughnut data={data} options={options} />
         <div className="gauge-center">
           <span className="gauge-score" style={{ color }}>{s}</span>
-          <span className="gauge-label">/ 100</span>
-          <span className="gauge-severity-label">{severityLabel}</span>
+          <span className="gauge-sub">/ 100</span>
+          <span className="gauge-label">{scoreLabel(s)}</span>
         </div>
       </div>
     </div>

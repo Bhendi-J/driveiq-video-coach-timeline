@@ -8,6 +8,8 @@ import BehaviourVisualiser from './components/BehaviourVisualiser'
 import FeatureTable        from './components/FeatureTable'
 import ReviewPanel         from './components/ReviewPanel'
 import LoginPanel          from './components/LoginPanel'
+import MainDashboard       from './components/MainDashboard'
+import MiniDashboard       from './components/MiniDashboard'
 import { Bar }   from 'react-chartjs-2'
 import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
 
@@ -98,6 +100,13 @@ function severityLabel(score) {
   return 'red'
 }
 
+function formatClock(sec) {
+  const total = Math.max(0, Math.floor(Number(sec) || 0))
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${String(secs).padStart(2, '0')}`
+}
+
 function getLiveInsights(features, score) {
   const insights = []
   
@@ -153,6 +162,7 @@ function isJwtExpired(token) {
 export default function App() {
   const [token,             setToken]             = useState(localStorage.getItem('driveiq_token') || '')
   const [showAuthDialog,    setShowAuthDialog]    = useState(false)
+  const [searchQuery,       setSearchQuery]       = useState('')
   
   const [isLiveMode,        setIsLiveMode]        = useState(false)
   const [liveScore,         setLiveScore]         = useState(0)
@@ -168,6 +178,7 @@ export default function App() {
   const [liveEvents,        setLiveEvents]        = useState([])
   const [liveVideoFile,     setLiveVideoFile]     = useState(null)
   const [streamActive,      setStreamActive]      = useState(false)
+  const [livePlayback,      setLivePlayback]      = useState({ current: 0, duration: 0 })
   
   const liveVideoUrl = useMemo(() => {
     if (!liveVideoFile) return null
@@ -229,7 +240,7 @@ export default function App() {
     }
   }, [offlineMode])
 
-  // ── /api/score polling (Live Mode only) ──────────────────────────────────
+  // /api/score polling (Live Mode only)
   const fetchScore = useCallback(async () => {
     if (!isLiveMode) {
       return
@@ -256,10 +267,10 @@ export default function App() {
       frameB64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1]
       clockRef.current = v.currentTime
     } else if (v) {
-      // Video element exists but is paused/ended — stop scoring
+      // Video element exists but is paused/ended - stop scoring
       return
     } else if (streamActive) {
-      // No video element at all, but stream active — use synthetic fallback
+      // No video element at all, but stream active - use synthetic fallback
       clockRef.current += POLL_MS / 1000
       frameB64 = generateSyntheticFrameB64(clockRef.current, generateTelemetry(clockRef.current))
     } else {
@@ -323,7 +334,7 @@ export default function App() {
       if (warnings.length > 0) {
         // Pick the worst severity and join all labels
         const worst = warnings.some(w => w.type === 'red') ? 'red' : 'yellow'
-        const summary = warnings.map(w => w.label).join(' · ')
+        const summary = warnings.map((w) => w.label).join(' | ')
         setLiveEvents(prev => {
           const entry = { label: summary, type: worst, timestamp_sec: clockRef.current }
           const next = [entry, ...prev]
@@ -336,7 +347,7 @@ export default function App() {
       setHealthState('degraded')
       setHealthMessage('Backend unstable. Retrying score stream with backoff...')
     }
-  }, [healthState, offlineMode, isLiveMode])
+  }, [healthState, offlineMode, isLiveMode, streamActive, token])
 
   const reconnectBackend = useCallback(async () => {
     healthFailCountRef.current = 0
@@ -388,285 +399,433 @@ export default function App() {
 
   const selectedCoach = selectedWindow?.coach_note || 'Select a segment to view coaching note.'
   const selectedSeverity = selectedWindow?.severity || 'yellow'
-
   const healthClass = `health-banner health-${healthState}`
   const schemaOk = healthMeta.schema_valid
   const modelsOk = healthMeta.core_models_loaded
+  const backendReady = schemaOk && modelsOk
+  const activeNav = isLiveMode ? 'live' : 'review'
+  const liveProgressPct = livePlayback.duration > 0
+    ? Math.min(100, (livePlayback.current / livePlayback.duration) * 100)
+    : 0
+  const todayScore = Math.round(
+    Number(isLiveMode ? liveScore : reviewResult?.avg_batch_score ?? displayedScore ?? 67),
+  )
+  const bestScore = Math.max(82, Math.round(Number(reviewResult?.avg_batch_score ?? 0)), Math.round(liveScore))
+  const tripCount = reviewResult?.window_count ? Math.max(1, Math.ceil(reviewResult.window_count / 6)) : 4
+  const fuelSaved = reviewResult?.avg_batch_score
+    ? `${Math.max(0, (Number(reviewResult.avg_batch_score) - 50) / 18).toFixed(1)}L`
+    : '2.3L'
+
+  const activateReviewMode = () => {
+    setIsLiveMode(false)
+    setStreamActive(false)
+  }
+
+  const activateLiveMode = () => {
+    setIsLiveMode(true)
+    setLivePoints([])
+    setLiveEvents([])
+    setLivePlayback({ current: 0, duration: 0 })
+    clockRef.current = 0
+    sessionStartedAtRef.current = Date.now()
+    prevFrameRef.current = null
+    streamCompleteRef.current = false
+  }
+
+  const scrollToSection = (sectionId) => {
+    const target = document.getElementById(sectionId)
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
-    <>
-      <header className="topbar">
-        <div className="header-left">
-          <div className="topbar-logo">
-            <span>DriveIQ</span>
-          </div>
-          <div className="status-pill neutral-pill">
-            <span className={`severity-badge ${schemaOk && modelsOk ? 'severity-green' : 'severity-red'}`}>
-              schema_valid: {String(schemaOk)} | core_models_loaded: {String(modelsOk)}
-            </span>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <span className="brand-mark">DQ</span>
+          <div className="brand-copy">
+            <span className="brand-name">DriveIQ</span>
+            <span className="brand-sub">Coaching Console</span>
           </div>
         </div>
-        <div className="header-right">
-          {token ? (
-            <div className="driver-profile card" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="driver-avatar" style={{ background: '#22c55e' }}>✓</div>
-                <div>
-                  <div style={{ fontWeight: 700, color: '#4ade80' }}>Verified Driver</div>
-                  <div style={{ fontSize: 12, color: '#94a3b8' }}>Session actively saved</div>
-                </div>
-              </div>
-              <button 
-                onClick={() => { localStorage.removeItem('driveiq_token'); setToken(''); setSessionSaveWarning(''); }} 
-                className="scenario-btn" 
-                style={{ background: '#ef4444', padding: '6px 12px', minHeight: 'auto', fontSize: '12px' }}>
-                Logout
-              </button>
-            </div>
-          ) : (
-            <div className="driver-profile card" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="driver-avatar" style={{ background: '#64748b' }}>?</div>
-                <div>
-                  <div style={{ fontWeight: 700, color: '#94a3b8' }}>Guest Driver</div>
-                  <div style={{ fontSize: 12, color: '#64748b' }}>Data won't be saved</div>
-                </div>
-              </div>
-              <button 
-                onClick={() => setShowAuthDialog(true)} 
-                className="scenario-btn" 
-                style={{ background: '#3b82f6', padding: '6px 12px', minHeight: 'auto', fontSize: '12px' }}>
-                Login / Register
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
 
-      {showAuthDialog && (
-        <LoginPanel 
-          onClose={() => setShowAuthDialog(false)} 
-          onLogin={(t) => { localStorage.setItem('driveiq_token', t); setToken(t); setSessionSaveWarning(''); setShowAuthDialog(false); }} 
-        />
-      )}
-
-      <div className={healthClass}>{healthMessage}</div>
-      {sessionSaveWarning ? <div className="health-banner health-degraded">{sessionSaveWarning}</div> : null}
-      {offlineMode ? (
-        <div className="offline-controls">
-          <button className="scenario-btn" onClick={reconnectBackend}>Retry Backend Connection</button>
-        </div>
-      ) : null}
-
-      <section className="stats-bar">
-        <div className="card stat-card"><div className="card-title">Today&apos;s Score</div><strong>67</strong></div>
-        <div className="card stat-card"><div className="card-title">Best Score</div><strong>82</strong></div>
-        <div className="card stat-card"><div className="card-title">Trips This Week</div><strong>4</strong></div>
-        <div className="card stat-card"><div className="card-title">Fuel Saved</div><strong>2.3L</strong></div>
-      </section>
-
-      <main className="demo-layout">
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          <button 
-            className="scenario-btn" 
-            style={{ flex: 1, background: !isLiveMode ? '#3b82f6' : 'rgba(255,255,255,0.05)' }}
-            onClick={() => setIsLiveMode(false)}
-          >
-            Post-Drive Full Analysis
+        <nav className="sidebar-nav">
+          <button className="nav-item" onClick={() => scrollToSection('overview')}>
+            <span className="nav-icon">01</span>
+            <span>Overview</span>
           </button>
-          <button 
-            className="scenario-btn" 
-            style={{ flex: 1, background: isLiveMode ? '#3b82f6' : 'rgba(255,255,255,0.05)', borderColor: isLiveMode ? '#60a5fa' : 'transparent' }}
+          <button
+            className={`nav-item ${activeNav === 'review' ? 'active' : ''}`}
             onClick={() => {
-              setIsLiveMode(true)
-              setLivePoints([])
-              setLiveEvents([])
-              clockRef.current = 0
-              sessionStartedAtRef.current = Date.now()
-              prevFrameRef.current = null
-              streamCompleteRef.current = false
+              activateReviewMode()
+              scrollToSection('review')
             }}
           >
-            Real-Time Live Mode
+            <span className="nav-icon">02</span>
+            <span>Post-Drive Review</span>
           </button>
-        </div>
+          <button
+            className={`nav-item ${activeNav === 'live' ? 'active' : ''}`}
+            onClick={() => {
+              activateLiveMode()
+              scrollToSection('live')
+            }}
+          >
+            <span className="nav-icon">03</span>
+            <span>Live Stream</span>
+          </button>
+          <button className="nav-item" onClick={() => scrollToSection('insights')}>
+            <span className="nav-icon">04</span>
+            <span>Insights</span>
+          </button>
+          <button className="nav-item" onClick={() => scrollToSection('visualiser')}>
+            <span className="nav-icon">05</span>
+            <span>Visualiser</span>
+          </button>
+        </nav>
 
-        {!isLiveMode ? (
-          <>
-            <section className="card review-primary">
-              <div className="review-head">
-                <div className="card-title">Trip Review (Full Analysis)</div>
-                <button className="scenario-btn" onClick={() => window.alert('Report export coming soon')}>
-                  Export Report
-                </button>
-              </div>
-              <ReviewPanel
-                onAnalysisComplete={setReviewResult}
-                onWindowSelect={setSelectedWindow}
-                selectedTimestampSec={selectedWindow?.start_sec ?? selectedWindow?.timestamp_sec}
-              />
-            </section>
-            
-            {reviewResult && (
-              <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                <div className="card">
-                  <div className="card-title">Drive Segment Breakdown</div>
-                  <div style={{ height: 220, padding: 10 }}>
-                    <Bar 
-                      data={{
-                        labels: reviewResult.segments?.map((_, i) => `Segment ${i+1}`) || [],
-                        datasets: [{
-                          label: 'Score per Segment',
-                          data: reviewResult.segments?.map(s => s.avg_score) || [],
-                          backgroundColor: reviewResult.segments?.map(s => severityClass(s.severity || s.avg_score) === 'severity-green' ? '#10b981' : severityClass(s.severity || s.avg_score) === 'severity-yellow' ? '#f59e0b' : '#ef4444'),
-                          borderRadius: 4
-                        }]
-                      }} 
-                      options={{ maintainAspectRatio: false, plugins: { legend: { display: false } } }} 
-                    />
-                  </div>
-                </div>
-                
-                <div className="card">
-                  <div className="card-title">Detailed Trip Report</div>
-                  <div style={{ color: '#e2e8f0', fontSize: 14, lineHeight: '1.6', marginTop: 10 }}>
-                    <p><strong>Overall Journey Score:</strong> {reviewResult.avg_batch_score?.toFixed(1) || 'N/A'}</p>
-                    <p><strong>Total Duration:</strong> {Math.floor((reviewResult.duration_sec || 0)/60)}m {Math.floor((reviewResult.duration_sec || 0)%60)}s</p>
-                    <p style={{ marginTop: 10, color: '#94a3b8' }}>
-                      This trip consisted of {reviewResult.window_count} analyzed extraction windows. 
-                      {reviewResult.segments?.some(s => s.severity === 'red') 
-                        ? ' There were critical drops in Eco Score, primarily due to instances of tailgating and erratic velocity shifts across specific timeline segments. Review the red segments mapped above.'
-                        : ' Flow and speed variation remained smooth. The XGBoost framework confidently categorized your driving consistency as safe.'}
-                    </p>
-                  </div>
-                  <TrendChart points={reviewPoints} emptyMessage="Upload a clip to see score trend" />
-                </div>
-              </section>
-            )}
-          </>
-        ) : (
-          <>
-            <section className="card review-primary" style={{ border: '2px solid #3b82f6' }}>
-              <div className="review-head">
-                <div className="card-title">Live Dynamic Streaming</div>
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span style={{ fontSize: 13, color: '#94a3b8' }}>Load Video to Stream:</span>
-                  <input type="file" accept="video/mp4" onChange={(e) => {
-                    setLiveVideoFile(e.target.files?.[0])
-                    setLivePoints([])
-                    setLiveEvents([])
-                    setLiveScore(0)
-                    setLiveFeatures({ ...ZERO_FEATURES })
-                    setStreamActive(false)
-                    clockRef.current = 0
-                    sessionStartedAtRef.current = Date.now()
-                    prevFrameRef.current = null
-                    streamCompleteRef.current = false
-                    sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
-                  }} />
-                  {liveVideoUrl && !streamActive && (
-                    <button className="scenario-btn" style={{ background: '#10b981' }} onClick={() => {
-                      sessionStartedAtRef.current = Date.now()
-                      setStreamActive(true)
-                      liveVideoRef.current?.play()
-                    }}>
-                      Start Stream
-                    </button>
-                  )}
-                </div>
-              </div>
-              {liveVideoUrl ? (
-                <video 
-                  ref={liveVideoRef}
-                  src={liveVideoUrl} 
-                  controls
-                  muted
-                  onEnded={() => {
-                    setStreamActive(false)
-                    streamCompleteRef.current = true
-                    // Calculate mean score
-                    if (livePoints.length > 0) {
-                      const avg = livePoints.reduce((acc, p) => acc + p.score, 0) / livePoints.length
-                      setLiveScore(Math.round(avg))
-                      setLiveEvents(prev => [{ label: `Stream Complete. Mean Eco Score: ${Math.round(avg)}`, type: 'green', timestamp_sec: clockRef.current }, ...prev])
-                    }
-                  }}
-                  style={{ width: '100%', maxHeight: 400, borderRadius: 10, marginTop: 14, background: '#020617' }} 
-                />
-              ) : (
-                <div style={{ padding: 40, textAlign: 'center', background: 'rgba(255,255,255,0.02)', borderRadius: 10, marginTop: 14, color: '#94a3b8' }}>
-                  Upload a mp4 file above to stream real video frames to the backend...
-                </div>
-              )}
-            </section>
-
-            <section className="layout-two-col">
-              <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
-
-              <div className="trip-history card">
-                <div className="card-title">Live Insights (Real-Time)</div>
-                <div className="history-list">
-                  {liveEvents.length > 0 ? (
-                    liveEvents.map((insight, idx) => {
-                      const m = Math.floor(insight.timestamp_sec / 60)
-                      const s = Math.floor(insight.timestamp_sec % 60)
-                      const tLabel = `${m}:${String(s).padStart(2, '0')}`
-                      return (
-                        <button
-                          key={idx}
-                          className="history-item"
-                          onClick={() => {
-                            if (liveVideoRef.current) {
-                              liveVideoRef.current.currentTime = insight.timestamp_sec
-                              liveVideoRef.current.play()
-                            }
-                          }}
-                          style={{ display: 'flex', justifyContent: 'space-between', textAlign: 'left' }}
-                        >
-                          <span><strong style={{ color: '#94a3b8' }}>[{tLabel}]</strong> {insight.label}</span>
-                          <span className={`severity-badge severity-${insight.type}`}>
-                            {insight.type.toUpperCase()}
-                          </span>
-                        </button>
-                      )
-                    })
-                  ) : (
-                    <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
-                      {streamActive ? 'Analysing stream... no major infractions.' : 'Start stream to generate insights.'}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            <section className="score-feature-grid">
-              <ScoreGauge score={displayedScore} />
-              <FeatureTable features={displayedFeatures} />
-            </section>
-
-            <section>
-              <CoachingPanel
-                tips={[selectedCoach]}
-                loading={false}
-                message={isLiveMode ? 'Live mode active. Real-time insights appear above.' : 'Coaching for selected review segment'}
-                severity={selectedSeverity}
-                source={selectedWindow?.score_source || 'review'}
-                fallback={false}
-                debugReason=""
-                warning=""
-                topIssue={selectedWindow?.dominant_issue || selectedWindow?.top_issue || ''}
-              />
-            </section>
-          </>
-        )}
-
-        <section className="card">
-          <div className="card-title">Behaviour Visualiser (Secondary)</div>
-          <div style={{ marginTop: 12 }}>
-            <BehaviourVisualiser features={displayedFeatures} />
+        <div className="sidebar-footer">
+          <div className="status-indicator">
+            <span className={`status-dot ${backendReady ? 'ok' : 'bad'}`} />
+            <span>{backendReady ? 'Backend Ready' : 'Backend Degraded'}</span>
           </div>
-        </section>
-      </main>
-    </>
+          <span className={`severity-badge ${backendReady ? 'severity-green' : 'severity-red'}`}>
+            schema: {String(schemaOk)} | models: {String(modelsOk)}
+          </span>
+        </div>
+      </aside>
+
+      <div className="workspace">
+        <header className="topbar">
+          <div className="topbar-left">
+            <label className="search-shell" htmlFor="app-search">
+              <input
+                id="app-search"
+                type="search"
+                placeholder="Search modules, lessons, sessions"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </label>
+          </div>
+
+          <div className="topbar-right">
+            <button type="button" className="icon-btn" aria-label="Notifications">N</button>
+            <div className="profile-chip">
+              <span className="profile-dot" />
+              <div className="profile-meta">
+                <span className="profile-title">{token ? 'Verified Driver' : 'Guest Driver'}</span>
+                <span className="profile-sub">{token ? 'Session saving enabled' : 'Session saving disabled'}</span>
+              </div>
+            </div>
+            {token ? (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  localStorage.removeItem('driveiq_token')
+                  setToken('')
+                  setSessionSaveWarning('')
+                }}
+              >
+                Logout
+              </button>
+            ) : (
+              <button type="button" className="btn btn-primary" onClick={() => setShowAuthDialog(true)}>
+                Login
+              </button>
+            )}
+          </div>
+        </header>
+
+        <div className={healthClass}>{healthMessage}</div>
+        {sessionSaveWarning ? <div className="health-banner health-degraded">{sessionSaveWarning}</div> : null}
+        {offlineMode ? (
+          <div className="offline-controls">
+            <button className="btn" onClick={reconnectBackend}>Retry Backend Connection</button>
+          </div>
+        ) : null}
+
+        <main className="main-content">
+          <MainDashboard token={token} offlineMode={offlineMode} />
+          <MiniDashboard isLiveMode={isLiveMode} liveScore={liveScore} reviewResult={reviewResult} />
+
+          <section className="mode-toggle">
+            <button
+              type="button"
+              className={`mode-btn ${!isLiveMode ? 'active' : ''}`}
+              onClick={activateReviewMode}
+            >
+              Post-Drive Full Analysis
+            </button>
+            <button
+              type="button"
+              className={`mode-btn ${isLiveMode ? 'active' : ''}`}
+              onClick={activateLiveMode}
+            >
+              Real-Time Live Mode
+            </button>
+          </section>
+
+          {!isLiveMode ? (
+            <>
+              <section className="panel-card" id="review">
+                <div className="panel-head">
+                  <div>
+                    <h2 className="section-title">Trip Review</h2>
+                    <p className="panel-subtitle">Upload a drive and navigate structured modules, lessons, and video moments.</p>
+                  </div>
+                  <button className="btn" onClick={() => window.alert('Report export coming soon')}>
+                    Export Report
+                  </button>
+                </div>
+                <ReviewPanel
+                  onAnalysisComplete={setReviewResult}
+                  onWindowSelect={setSelectedWindow}
+                  selectedTimestampSec={selectedWindow?.start_sec ?? selectedWindow?.timestamp_sec}
+                />
+              </section>
+
+              {reviewResult && (
+                <section className="grid-2">
+                  <article className="card">
+                    <div className="card-title">Drive Segment Breakdown</div>
+                    <div className="chart-frame">
+                      <Bar
+                        data={{
+                          labels: reviewResult.segments?.map((_, i) => `Segment ${i + 1}`) || [],
+                          datasets: [{
+                            label: 'Score per Segment',
+                            data: reviewResult.segments?.map((s) => s.avg_score) || [],
+                            backgroundColor: reviewResult.segments?.map((s) => {
+                              const cls = severityClass(s.severity || s.avg_score)
+                              if (cls === 'severity-green') return 'rgba(234, 234, 234, 0.88)'
+                              if (cls === 'severity-yellow') return 'rgba(234, 234, 234, 0.62)'
+                              return 'rgba(234, 234, 234, 0.36)'
+                            }),
+                            borderRadius: 8,
+                            borderSkipped: false,
+                          }],
+                        }}
+                        options={{
+                          maintainAspectRatio: false,
+                          scales: {
+                            x: {
+                              grid: { display: false },
+                              ticks: { color: 'rgba(234, 234, 234, 0.58)', font: { size: 11 } },
+                              border: { color: 'transparent' },
+                            },
+                            y: {
+                              suggestedMax: 100,
+                              grid: { color: 'rgba(234, 234, 234, 0.08)' },
+                              ticks: { color: 'rgba(234, 234, 234, 0.46)', font: { size: 10 } },
+                              border: { color: 'transparent' },
+                            },
+                          },
+                          plugins: { legend: { display: false } },
+                        }}
+                      />
+                    </div>
+                  </article>
+
+                  <div className="stack-col">
+                    <article className="card">
+                      <div className="card-title">Detailed Trip Report</div>
+                      <div className="report-copy">
+                        <p><strong>Overall Journey Score:</strong> {reviewResult.avg_batch_score?.toFixed(1) || 'N/A'}</p>
+                        <p><strong>Total Duration:</strong> {formatClock(reviewResult.duration_sec)}</p>
+                        <p>
+                          {reviewResult.window_count} extraction windows were evaluated.
+                          {reviewResult.segments?.some((s) => s.severity === 'red')
+                            ? ' Critical drops are clustered around abrupt velocity shifts and proximity spikes.'
+                            : ' Session flow remained stable with smooth transitions across extraction windows.'}
+                        </p>
+                      </div>
+                    </article>
+                    <TrendChart points={reviewPoints} emptyMessage="Upload a clip to see score trend" />
+                  </div>
+                </section>
+              )}
+            </>
+          ) : (
+            <>
+              <section className="panel-card panel-live" id="live">
+                <div className="panel-head">
+                  <div>
+                    <h2 className="section-title">Live Dynamic Streaming</h2>
+                    <p className="panel-subtitle">Run a direct frame stream and monitor live timeline coaching output.</p>
+                  </div>
+                  <div className="file-input-wrap">
+                    <input
+                      type="file"
+                      accept="video/mp4"
+                      onChange={(e) => {
+                        setLiveVideoFile(e.target.files?.[0] || null)
+                        setLivePoints([])
+                        setLiveEvents([])
+                        setLiveScore(0)
+                        setLiveFeatures({ ...ZERO_FEATURES })
+                        setStreamActive(false)
+                        setLivePlayback({ current: 0, duration: 0 })
+                        clockRef.current = 0
+                        sessionStartedAtRef.current = Date.now()
+                        prevFrameRef.current = null
+                        streamCompleteRef.current = false
+                        sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
+                      }}
+                    />
+                    {liveVideoUrl && !streamActive ? (
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => {
+                          sessionStartedAtRef.current = Date.now()
+                          setStreamActive(true)
+                          liveVideoRef.current?.play()
+                        }}
+                      >
+                        Start Stream
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <article className="video-card">
+                  <div className="video-card-media">
+                    {liveVideoUrl ? (
+                      <video
+                        ref={liveVideoRef}
+                        src={liveVideoUrl}
+                        controls
+                        muted
+                        onLoadedMetadata={(e) => {
+                          const duration = Number(e.currentTarget.duration) || 0
+                          setLivePlayback({ current: 0, duration })
+                        }}
+                        onTimeUpdate={(e) => {
+                          const current = Number(e.currentTarget.currentTime) || 0
+                          const duration = Number(e.currentTarget.duration) || 0
+                          setLivePlayback({ current, duration })
+                        }}
+                        onEnded={() => {
+                          setStreamActive(false)
+                          streamCompleteRef.current = true
+                          if (livePoints.length > 0) {
+                            const avg = livePoints.reduce((acc, p) => acc + p.score, 0) / livePoints.length
+                            setLiveScore(Math.round(avg))
+                            setLiveEvents((prev) => [
+                              { label: `Stream complete. Mean Eco Score ${Math.round(avg)}.`, type: 'green', timestamp_sec: clockRef.current },
+                              ...prev,
+                            ])
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="video-placeholder">
+                        Upload an MP4 file to begin live frame-by-frame analysis.
+                      </div>
+                    )}
+                  </div>
+                  <div className="video-card-body">
+                    <h3 className="video-card-title line-clamp-2">
+                      Real-Time Drive Session - Adaptive stream diagnostics
+                    </h3>
+                    <div className="video-card-meta">
+                      <span>{streamActive ? 'Streaming active' : 'Awaiting stream start'}</span>
+                      <span>{formatClock(livePlayback.current)} / {formatClock(livePlayback.duration)}</span>
+                      <span>{liveEvents.length} events</span>
+                    </div>
+                    <div className="progress-track">
+                      <div className="progress-fill" style={{ width: `${liveProgressPct}%` }} />
+                    </div>
+                  </div>
+                </article>
+              </section>
+
+              <section className="grid-2">
+                <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
+
+                <article className="card timeline-card">
+                  <div className="card-title">Live Timeline</div>
+                  <div className="timeline-module">
+                    <div className="timeline-module-head static">
+                      <span className="timeline-module-title">Module 01 - Live Coaching Events</span>
+                      <span className="timeline-module-count">{liveEvents.length || 0} lessons</span>
+                    </div>
+                    <div className="timeline-module-body expanded">
+                      {liveEvents.length > 0 ? (
+                        liveEvents.map((insight, idx) => {
+                          const label = formatClock(insight.timestamp_sec)
+                          return (
+                            <div className="timeline-lesson" key={`${label}-${idx}`}>
+                              <span className="timeline-lesson-label">Lesson {String(idx + 1).padStart(2, '0')}</span>
+                              <button
+                                type="button"
+                                className="timeline-video-item"
+                                onClick={() => {
+                                  if (liveVideoRef.current) {
+                                    liveVideoRef.current.currentTime = insight.timestamp_sec
+                                    liveVideoRef.current.play()
+                                  }
+                                }}
+                              >
+                                <span className="line-clamp-2">{insight.label}</span>
+                                <div className="timeline-video-meta">
+                                  <span>{label}</span>
+                                  <span className={`severity-badge severity-${insight.type}`}>{insight.type}</span>
+                                </div>
+                              </button>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="empty-state">
+                          <p className="empty-state-text">
+                            {streamActive ? 'Analyzing stream with no significant infractions yet.' : 'Start stream to generate timeline lessons.'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              </section>
+            </>
+          )}
+
+          <section className="score-feature-grid" id="insights">
+            <ScoreGauge score={displayedScore} />
+            <FeatureTable features={displayedFeatures} />
+          </section>
+
+          <section>
+            <CoachingPanel
+              tips={[selectedCoach]}
+              loading={false}
+              message={isLiveMode ? 'Live mode active. Real-time insights appear above.' : 'Coaching for selected review segment.'}
+              severity={selectedSeverity}
+              source={selectedWindow?.score_source || 'review'}
+              fallback={false}
+              debugReason=""
+              warning=""
+              topIssue={selectedWindow?.dominant_issue || selectedWindow?.top_issue || ''}
+            />
+          </section>
+
+          <section id="visualiser">
+            <BehaviourVisualiser features={displayedFeatures} />
+          </section>
+        </main>
+      </div>
+
+      {showAuthDialog ? (
+        <LoginPanel
+          onClose={() => setShowAuthDialog(false)}
+          onLogin={(t) => {
+            localStorage.setItem('driveiq_token', t)
+            setToken(t)
+            setSessionSaveWarning('')
+            setShowAuthDialog(false)
+          }}
+        />
+      ) : null}
+    </div>
   )
 }

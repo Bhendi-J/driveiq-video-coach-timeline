@@ -44,3 +44,32 @@ def save_session(user_id, score, eco_score, features):
 
 def get_user_sessions(user_id, limit=50):
     return list(sessions_collection.find({"user_id": user_id}).sort("timestamp", -1).limit(limit))
+
+def get_dashboard_metrics(user_id):
+    sessions = list(sessions_collection.find({"user_id": user_id}))
+    if not sessions:
+        return {
+            "mean_eco_score": 0,
+            "lowest_eco_score": 0,
+            "total_trips": 0,
+            "trips_this_week": 0
+        }
+    
+    total_trips = len(sessions)
+    scores = [s.get("score", 0) for s in sessions]
+    mean_eco_score = sum(scores) / len(scores) if scores else 0
+    lowest_eco_score = min(scores) if scores else 0
+    
+    now = datetime.utcnow()
+    trips_this_week = 0
+    for s in sessions:
+        ts = s.get("timestamp")
+        if ts and (now - ts).days <= 7:
+            trips_this_week += 1
+            
+    return {
+        "mean_eco_score": round(mean_eco_score),
+        "lowest_eco_score": round(lowest_eco_score),
+        "total_trips": total_trips,
+        "trips_this_week": trips_this_week
+    }

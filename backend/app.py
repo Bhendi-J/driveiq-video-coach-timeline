@@ -48,6 +48,7 @@ from backend.routes.score   import score_bp
 from backend.routes.coach   import coach_bp
 from backend.routes.review  import review_bp
 from backend.routes.auth    import auth_bp
+from backend.routes.dashboard import dashboard_bp
 
 
 def create_app() -> Flask:
@@ -70,6 +71,7 @@ def create_app() -> Flask:
     app.register_blueprint(coach_bp)
     app.register_blueprint(review_bp)
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(dashboard_bp, url_prefix="/api/dashboard")
 
     return app
 
