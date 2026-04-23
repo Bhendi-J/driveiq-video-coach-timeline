@@ -130,7 +130,7 @@ function buildTimelineModules(segments = []) {
         return {
           id: `${segment.start_sec}-${segment.end_sec}-${idx}`,
           label: `Lesson ${String(i + idx + 1).padStart(2, '0')}`,
-          title: `Video Focus - ${issue}`,
+          title: `${segment.coach_note || issue}`,
           segment,
           duration,
         }
@@ -318,7 +318,7 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
 
           <article className="card timeline-card">
             <div className="card-title">Structured Timeline</div>
-            <div className="timeline-collection">
+            <div className="timeline-collection" style={{ overflowY: 'auto', maxHeight: '400px', paddingRight: '4px' }}>
               {timelineModules.map((module) => {
                 const expanded = Boolean(expandedModules[module.id])
                 return (
@@ -350,7 +350,7 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
                               <span className="line-clamp-2">{lesson.title}</span>
                               <div className="timeline-video-meta">
                                 <span>{formatRange(seg.start_sec, seg.end_sec)} | {lesson.duration}s</span>
-                                <span>{seg.window_count} windows</span>
+                                <span>Score: {seg.score}</span>
                                 <span className={severityBadge(seg.severity)}>{seg.severity}</span>
                               </div>
                             </button>

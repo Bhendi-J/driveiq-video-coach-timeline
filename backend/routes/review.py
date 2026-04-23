@@ -28,28 +28,16 @@ logger = logging.getLogger("driveiq.review")
 # Static dictionary removed, now uses centralized rule engine
 
 
-def _severity_thresholds_from_scores(scores: list[float]) -> tuple[float, float, str]:
-    """
-    Compute dynamic severity thresholds from score distribution.
-    Returns: (yellow_min, green_min, mode)
-    """
-    fallback = (50.0, 75.0, "fixed_75_50_fallback")
-    if not scores:
-        return fallback
+GREEN_THRESHOLD = 80.0
+YELLOW_THRESHOLD = 65.0
 
-    arr = np.asarray(scores, dtype=np.float32)
-    arr = arr[np.isfinite(arr)]
-    if arr.size < 3:
-        return fallback
-
-    yellow_min = float(np.quantile(arr, 1.0 / 3.0))
-    green_min = float(np.quantile(arr, 2.0 / 3.0))
-
-    # Degenerate distributions should not collapse all severities.
-    if green_min - yellow_min < 1e-6:
-        return fallback
-
-    return yellow_min, green_min, "dynamic_tertiles"
+def classify_severity(score):
+    if score >= GREEN_THRESHOLD:
+        return "green"
+    elif score >= YELLOW_THRESHOLD:
+        return "yellow"
+    else:
+        return "red"
 
 
 def _extract_review_fast_features(
@@ -59,6 +47,8 @@ def _extract_review_fast_features(
 ) -> pd.DataFrame:
     """Review extractor using the real CV pipeline (YOLO + optical flow)."""
     from cv.cv_pipeline import cv_pipeline
+    from cv.optical_flow import reset_flow_state
+    reset_flow_state()  # Clear acceleration state between videos
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -265,12 +255,10 @@ def review():
         # Score all windows chronologically with EMA smoothing
         scored = score_windows_with_ema([fd for _, fd in all_feature_dicts])
         score_values = [float(s.get("smoothed_score", 0.0)) for s in scored]
-        yellow_min, green_min, severity_mode = _severity_thresholds_from_scores(score_values)
         logger.info(
-            "/api/review severity_thresholds mode=%s yellow_min=%.2f green_min=%.2f",
-            severity_mode,
-            yellow_min,
-            green_min,
+            "/api/review severity_thresholds mode=static yellow_min=%.2f green_min=%.2f",
+            YELLOW_THRESHOLD,
+            GREEN_THRESHOLD,
         )
 
         from backend.routes.coach import _evaluate_rules
@@ -280,12 +268,7 @@ def review():
             score_val = result["smoothed_score"]
             events = result["events"]
 
-            if score_val >= green_min:
-                severity = "green"
-            elif score_val >= yellow_min:
-                severity = "yellow"
-            else:
-                severity = "red"
+            severity = classify_severity(score_val)
 
             top_issue = event_to_issue_key(events)
             
@@ -322,9 +305,9 @@ def review():
                 "duration_sec": round(duration_sec, 3),
                 "window_count": len(windows_out),
                 "severity_thresholds": {
-                    "mode": severity_mode,
-                    "yellow_min": round(float(yellow_min), 2),
-                    "green_min": round(float(green_min), 2),
+                    "mode": "static",
+                    "yellow_min": YELLOW_THRESHOLD,
+                    "green_min": GREEN_THRESHOLD,
                 },
             }
         )

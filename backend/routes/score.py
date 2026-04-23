@@ -12,8 +12,8 @@ import uuid
 import logging
 
 from flask import Blueprint, request, jsonify, current_app
-from backend.db import save_session
-from backend.auth import verify_token
+from backend.db import save_session, sessions_collection
+from backend.auth import verify_token, token_required
 from backend.scoring import score_window, EMA_ALPHA, BASE_SCORE
 
 logger = logging.getLogger("driveiq.routes.score")
@@ -201,6 +201,12 @@ def score():
         if last_score_ts is None or (now_ts - last_score_ts) > EMA_RESET_GAP_SEC:
             prev_score = BASE_SCORE
             _PREV_SCORE_BY_SESSION.pop(session_id, None)
+            # Reset optical flow acceleration state for the new session
+            try:
+                from cv.optical_flow import reset_flow_state
+                reset_flow_state()
+            except Exception:
+                pass
         else:
             prev_score = _PREV_SCORE_BY_SESSION.get(session_id, BASE_SCORE)
 
@@ -216,7 +222,7 @@ def score():
         session_save_error = None
         if user_id:
             try:
-                save_session(user_id, score_val, score_val, feature_dict)
+                save_session(user_id, session_id, score_val, score_val, feature_dict, events)
                 session_saved = True
             except Exception as e:
                 session_save_error = str(e)
@@ -236,5 +242,64 @@ def score():
         logger.error(f"Score systemic failure -> {general_err}")
         return jsonify({
             "error": "internal_error",
-            "message": "Scoring pipeline failed"
         }), 500  # Changed from 200
+
+@score_bp.route("/api/trips/history", methods=["GET"])
+@token_required
+def get_trip_history(current_user):
+    user_id = current_user["_id"]
+    
+    trips = list(sessions_collection.find({"user_id": user_id}).sort("start_time", -1).limit(50))
+    
+    for trip in trips:
+        if "_id" in trip:
+            del trip["_id"]
+        
+        trip["date"] = trip.get("start_time")
+        trip["frame_count"] = trip.get("frame_count", len(trip.get("frames", [])))
+        
+        all_events = []
+        for f in trip.get("frames", []):
+            evs = f.get("events", [])
+            if isinstance(evs, list):
+                all_events.extend(evs)
+            elif isinstance(evs, str):
+                all_events.append(evs)
+                
+        trip["top_event"] = max(set(all_events), key=all_events.count) if all_events else "none"
+        trip["total_events"] = len(all_events)
+        
+        if "frames" in trip:
+            del trip["frames"]
+        if "start_time" in trip:
+            del trip["start_time"]
+        if "end_time" in trip:
+            del trip["end_time"]
+            
+    return jsonify(trips), 200
+
+@score_bp.route("/api/trips/<session_id>/timeline", methods=["GET"])
+@token_required
+def get_trip_timeline(current_user, session_id):
+    user_id = current_user["_id"]
+    
+    trip = sessions_collection.find_one({"user_id": user_id, "session_id": session_id})
+    if not trip:
+        return jsonify({"error": "trip_not_found"}), 404
+        
+    frames = trip.get("frames", [])
+        
+    for f in frames:
+        if "timestamp" in f and f["timestamp"]:
+            f["timestamp_sec"] = f["timestamp"].timestamp()
+            del f["timestamp"]
+        
+        score = f.get("score", 0)
+        if score >= 80:
+            f["severity"] = "green"
+        elif score >= 65:
+            f["severity"] = "yellow"
+        else:
+            f["severity"] = "red"
+            
+    return jsonify(frames), 200

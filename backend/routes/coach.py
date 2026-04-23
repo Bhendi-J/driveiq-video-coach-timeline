@@ -16,6 +16,7 @@ from flask import Blueprint, request, jsonify
 
 from backend.coach_llm import generate_coaching_tip, is_model_loaded
 from backend.scoring import score_window
+from backend.db import trip_summaries_collection
 
 logger = logging.getLogger("driveiq.coach")
 coach_bp = Blueprint("coach", __name__)
@@ -80,7 +81,7 @@ def _evaluate_rules(score: float, features: dict, events: list[str]) -> list[str
             "Back off slightly from the car in front to improve reaction time."
         ]))
 
-    if "hard_braking" in events or float(features.get("braking_ratio", features.get("braking_flag", 0.0))) > 0.3:
+    if "hard_braking" in events or float(features.get("braking_ratio", features.get("braking_flag", 0.0))) > 0.5:
         tips.append(random.choice([
             "Anticipate stops earlier and ease off the accelerator gradually.",
             "Try coasting to a stop instead of braking hard.",
@@ -94,7 +95,7 @@ def _evaluate_rules(score: float, features: dict, events: list[str]) -> list[str
             "Frequent lane changes disrupt traffic flow and waste fuel."
         ]))
 
-    if "erratic_speed" in events or float(features.get("flow_variance", 0.0)) > 8.0:
+    if "erratic_speed" in events or float(features.get("flow_variance", 0.0)) > 20.0:
         tips.append(random.choice([
             "Maintain a steady speed to improve fuel efficiency.",
             "Fluctuating speeds burn extra gas; try to keep a constant pace.",
@@ -126,6 +127,13 @@ def coach():
     score = float(data.get("score", 50.0))
     features = data.get("features", {})
     session_id = str(data.get("session_id", "") or request.headers.get("X-Session-Id", ""))
+    is_summary = bool(data.get("is_summary"))
+
+    if is_summary and session_id:
+        from backend.db import sessions_collection
+        db_doc = sessions_collection.find_one({"session_id": session_id})
+        if db_doc and isinstance(db_doc.get("tips"), list) and len(db_doc["tips"]) > 0:
+            return jsonify({"tips": db_doc["tips"]})
 
     # Detect events from features if not provided
     events = data.get("events")
@@ -136,15 +144,16 @@ def coach():
 
     # Check cache first
     cache_key = _cache_key(score, features, session_id)
-    cached = _cache_get(cache_key)
-    if cached:
-        return jsonify(cached)
+    if not is_summary:
+        cached = _cache_get(cache_key)
+        if cached:
+            return jsonify(cached)
 
     try:
         # Try Flan-T5 first
         llm_tip, source = generate_coaching_tip(score, severity, events, features)
 
-        if llm_tip and source == "flan_t5":
+        if llm_tip and source == "gemini":
             tips = [llm_tip]
             # Add one rule-based tip as backup variety
             rule_tips = _evaluate_rules(score, features, events)
@@ -186,5 +195,13 @@ def coach():
             "model_loaded": is_model_loaded(),
         }
 
-    _cache_set(cache_key, payload)
+    if is_summary and session_id:
+        from backend.db import sessions_collection
+        sessions_collection.update_one(
+            {"session_id": session_id},
+            {"$set": {"tips": payload.get("tips", [])}}
+        )
+    else:
+        _cache_set(cache_key, payload)
+        
     return jsonify(payload)

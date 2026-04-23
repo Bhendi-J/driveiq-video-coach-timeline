@@ -33,15 +33,15 @@ MAX_SCORE  = 100.0
 # Event definitions: (feature_key, threshold, deduction_points, event_label)
 # Only values ABOVE the threshold trigger the deduction.
 EVENT_RULES = [
-    ("braking_ratio",      0.3,  15.0, "hard_braking"),
-    ("proximity_score",    0.12, 20.0, "tailgating"),
-    ("lane_change_ratio",  0.3,  12.0, "lane_swerving"),
-    ("pedestrian_ratio",   0.5,  10.0, "pedestrian_risk"),
-    ("flow_variance",      8.0,   5.0, "erratic_speed"),
+    ("braking_ratio",      0.5,  10.0, "hard_braking"),
+    ("proximity_score",    0.12, 10.0, "tailgating"),
+    ("lane_change_ratio",  0.3,  5.0, "lane_swerving"),
+    ("pedestrian_ratio",   0.5,  0.5, "pedestrian_risk"),
+    ("flow_variance",      20.0,  3.0, "erratic_speed"),
 ]
 
 # EMA smoothing factor for review mode (0 = ignore current, 1 = ignore history)
-EMA_ALPHA = 0.3
+EMA_ALPHA = 0.6
 
 # Bonus for sustained clean driving
 CLEAN_WINDOW_BONUS = 0.5  # points added per consecutive clean window
@@ -68,7 +68,7 @@ def score_window(features: dict) -> tuple[float, list[str]]:
         val = float(features.get(feat_key, 0.0))
         if val > threshold:
             # Scale deduction by how far above threshold
-            excess_ratio = min((val - threshold) / max(threshold, 0.01), 2.0)
+            excess_ratio = min((val - threshold) / max(threshold, 0.01), 1.2)
             actual_deduction = deduction * excess_ratio
             score -= actual_deduction
             events.append(event_label)

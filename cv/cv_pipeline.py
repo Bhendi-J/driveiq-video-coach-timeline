@@ -76,7 +76,7 @@ def cv_pipeline(
     else:
         flow_feats = {
             "mean_flow": 0.0, "variance": 0.0,
-            "braking_flag": 0, "lane_change_flag": 0,
+            "braking_flag": 0, "lane_change_flag": 0, "erratic_flag": 0,
         }
         flow_ms = 0.0
 
@@ -89,11 +89,13 @@ def cv_pipeline(
     pedestrian_ratio = min(pedestrian_count / 5.0, 1.0)
     braking_ratio = float(flow_feats["braking_flag"])
     lane_change_ratio = float(flow_feats["lane_change_flag"])
+    erratic_flag = float(flow_feats.get("erratic_flag", 0))
 
     feature_vector = {
         "mean_flow":          float(flow_feats["mean_flow"]),
         "flow_variance":      float(flow_feats["variance"]),
-        "braking_flag":       int(braking_ratio > 0.3),  # Keep legacy binary flag for UI
+        "erratic_flag":       int(erratic_flag > 0),  # Binary flag for UI
+        "braking_flag":       int(braking_ratio > 0.5),  # Keep legacy binary flag for UI
         "braking_ratio":      braking_ratio,
         "lane_change_flag":   int(lane_change_ratio > 0.3),  # Keep legacy binary flag for UI
         "lane_change_ratio":  lane_change_ratio,

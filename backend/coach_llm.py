@@ -70,8 +70,8 @@ def build_coaching_prompt(score: float, severity: str, events: list[str], featur
         f"You are a professional, encouraging driving instructor. "
         f"A driver just finished a segment and scored {score:.0f} out of 100 (severity zone: {severity}).\n"
         f"{event_desc}{context}\n"
-        f"Based on this data, give them ONE highly specific, practical, short coaching tip (1-2 sentences maximum) "
-        f"to improve their driving safety or fuel economy. Don't mention the score itself, just give the tip."
+        f"Based on this data, provide a highly detailed, practical coaching tip (3-4 sentences minimum) "
+        f"to improve their driving safety or fuel economy. Explain the 'why' behind your advice. Don't mention the score itself."
     )
     return prompt
 
@@ -99,11 +99,11 @@ def generate_coaching_tip(
         
         # Generation config specifically tailored for direct, non-chatty responses
         response = _client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=150,
+                max_output_tokens=300,
             )
         )
         

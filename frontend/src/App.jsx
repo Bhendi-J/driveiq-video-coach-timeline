@@ -4,12 +4,16 @@ import axios from 'axios'
 import ScoreGauge         from './components/ScoreGauge'
 import CoachingPanel      from './components/CoachingPanel'
 import TrendChart         from './components/TrendChart'
-import BehaviourVisualiser from './components/BehaviourVisualiser'
+
 import FeatureTable        from './components/FeatureTable'
 import ReviewPanel         from './components/ReviewPanel'
 import LoginPanel          from './components/LoginPanel'
 import MainDashboard       from './components/MainDashboard'
 import MiniDashboard       from './components/MiniDashboard'
+import EventCounterPanel   from './components/EventCounterPanel'
+import ProximityHeatstrip  from './components/ProximityHeatstrip'
+import BrakingMeter        from './components/BrakingMeter'
+import SpeedProxyMiniChart from './components/SpeedProxyMiniChart'
 import { Bar }   from 'react-chartjs-2'
 import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
 
@@ -119,7 +123,7 @@ function getLiveInsights(features, score) {
   if (features?.braking_flag === 1 || features?.braking_flag_ratio > 0) {
     insights.push({ label: 'Harsh braking detected (-score)', type: 'red' })
   }
-  if (features?.lane_change_flag === 1 || features?.lane_change_flag_ratio > 0) {
+  if (Number(features?.lane_change_flag) > 0) {
     insights.push({ label: 'Erratic swerving / lane changes', type: 'yellow' })
   }
   if (Number(features?.proximity_score) > 0.15) {
@@ -127,7 +131,7 @@ function getLiveInsights(features, score) {
   } else if (Number(features?.proximity_score) > 0.05) {
     insights.push({ label: 'Moderate following distance', type: 'yellow' })
   }
-  if (Number(features?.flow_variance) > 5.0) {
+  if (features?.erratic_flag === 1) {
     insights.push({ label: 'High optical velocity changes', type: 'yellow' })
   }
   
@@ -164,7 +168,8 @@ export default function App() {
   const [showAuthDialog,    setShowAuthDialog]    = useState(false)
   const [searchQuery,       setSearchQuery]       = useState('')
   
-  const [isLiveMode,        setIsLiveMode]        = useState(false)
+  const [currentView,       setCurrentView]       = useState('live')
+  const isLiveMode = currentView === 'live'
   const [liveScore,         setLiveScore]         = useState(0)
   const [liveFeatures,      setLiveFeatures]      = useState({ ...ZERO_FEATURES })
   const [reviewResult,      setReviewResult]      = useState(null)
@@ -192,6 +197,8 @@ export default function App() {
   const healthFailCountRef = useRef(0)
   const liveVideoRef = useRef(null)
   const streamCompleteRef = useRef(false)
+  const cleanFrameCountRef = useRef(0)
+  const lastPositiveTimeRef = useRef(0)
 
   // Cleanup object URLs
   useEffect(() => {
@@ -336,11 +343,37 @@ export default function App() {
         const worst = warnings.some(w => w.type === 'red') ? 'red' : 'yellow'
         const summary = warnings.map((w) => w.label).join(' | ')
         setLiveEvents(prev => {
-          const entry = { label: summary, type: worst, timestamp_sec: clockRef.current }
+          const entry = { label: summary, type: worst, timestamp_sec: clockRef.current, score: Math.round(s) }
           const next = [entry, ...prev]
           if (next.length > 30) next.length = 30
           return next
         })
+        cleanFrameCountRef.current = 0  // reset clean streak
+      } else {
+        // No warnings — track consecutive clean frames for positive feedback
+        cleanFrameCountRef.current += 1
+        const now = Date.now()
+        const secSinceLastPositive = (now - lastPositiveTimeRef.current) / 1000
+
+        // Push a positive event every ~10 seconds of clean driving (score > 85)
+        if (s > 85 && cleanFrameCountRef.current >= 4 && secSinceLastPositive >= 10) {
+          const positiveMessages = [
+            'Smooth driving maintained — excellent fuel efficiency.',
+            'Good lane discipline and steady speed.',
+            'Safe following distance — keep it up!',
+            'Consistent eco-driving behavior detected.',
+            'No infractions — optimal driving pattern.',
+          ]
+          const msg = positiveMessages[Math.floor(Math.random() * positiveMessages.length)]
+          setLiveEvents(prev => {
+            const entry = { label: msg, type: 'green', timestamp_sec: clockRef.current, score: Math.round(s) }
+            const next = [entry, ...prev]
+            if (next.length > 30) next.length = 30
+            return next
+          })
+          lastPositiveTimeRef.current = now
+          cleanFrameCountRef.current = 0
+        }
       }
 
     } catch {
@@ -379,8 +412,8 @@ export default function App() {
     : Number(selectedWindow?.avg_score ?? selectedWindow?.score ?? 0)
   const displayedFeatures = isLiveMode
     ? {
-        rpm: liveFeatures?.rpm ?? 0,
-        throttle_position: liveFeatures?.throttle_position ?? 0,
+        pedestrian_flag: liveFeatures?.pedestrian_flag ?? 0,
+        vehicle_density: liveFeatures?.vehicle_density ?? 0,
         braking_flag: liveFeatures?.braking_flag ?? 0,
         lane_change_flag: liveFeatures?.lane_change_flag ?? 0,
         proximity_score: liveFeatures?.proximity_score ?? 0,
@@ -388,8 +421,8 @@ export default function App() {
         flow_variance: liveFeatures?.flow_variance ?? 0,
       }
     : {
-        rpm: Number(selectedWindow?.rpm ?? 0),
-        throttle_position: Number(selectedWindow?.throttle_position ?? 0),
+        pedestrian_flag: Number(selectedWindow?.pedestrian_ratio ?? selectedWindow?.pedestrian_flag ?? 0) > 0 ? 1 : 0,
+        vehicle_density: Number(selectedWindow?.vehicle_density ?? selectedWindow?.vehicle_count ?? 0),
         braking_flag: Number(selectedWindow?.braking_flag_ratio ?? 0) > 0 ? 1 : 0,
         lane_change_flag: Number(selectedWindow?.lane_change_flag_ratio ?? 0) > 0 ? 1 : 0,
         proximity_score: Number(selectedWindow?.proximity_score_mean ?? 0),
@@ -417,12 +450,12 @@ export default function App() {
     : '2.3L'
 
   const activateReviewMode = () => {
-    setIsLiveMode(false)
+    setCurrentView('review')
     setStreamActive(false)
   }
 
   const activateLiveMode = () => {
-    setIsLiveMode(true)
+    setCurrentView('live')
     setLivePoints([])
     setLiveEvents([])
     setLivePlayback({ current: 0, duration: 0 })
@@ -477,10 +510,7 @@ export default function App() {
             <span className="nav-icon">04</span>
             <span>Insights</span>
           </button>
-          <button className="nav-item" onClick={() => scrollToSection('visualiser')}>
-            <span className="nav-icon">05</span>
-            <span>Visualiser</span>
-          </button>
+
         </nav>
 
         <div className="sidebar-footer">
@@ -546,27 +576,39 @@ export default function App() {
         ) : null}
 
         <main className="main-content">
-          <MainDashboard token={token} offlineMode={offlineMode} />
-          <MiniDashboard isLiveMode={isLiveMode} liveScore={liveScore} reviewResult={reviewResult} />
+          {currentView === 'history' && (
+            <MainDashboard token={token} offlineMode={offlineMode} />
+          )}
+
+          {currentView !== 'history' && (
+            <MiniDashboard isLiveMode={isLiveMode} liveScore={liveScore} reviewResult={reviewResult} />
+          )}
 
           <section className="mode-toggle">
             <button
               type="button"
-              className={`mode-btn ${!isLiveMode ? 'active' : ''}`}
-              onClick={activateReviewMode}
-            >
-              Post-Drive Full Analysis
-            </button>
-            <button
-              type="button"
-              className={`mode-btn ${isLiveMode ? 'active' : ''}`}
+              className={`mode-btn ${currentView === 'live' ? 'active' : ''}`}
               onClick={activateLiveMode}
             >
               Real-Time Live Mode
             </button>
+            <button
+              type="button"
+              className={`mode-btn ${currentView === 'history' ? 'active' : ''}`}
+              onClick={() => setCurrentView('history')}
+            >
+              Trip History
+            </button>
+            <button
+              type="button"
+              className={`mode-btn ${currentView === 'review' ? 'active' : ''}`}
+              onClick={activateReviewMode}
+            >
+              Post-Drive Full Analysis
+            </button>
           </section>
 
-          {!isLiveMode ? (
+          {currentView === 'review' && (
             <>
               <section className="panel-card" id="review">
                 <div className="panel-head">
@@ -592,7 +634,7 @@ export default function App() {
                     <div className="chart-frame">
                       <Bar
                         data={{
-                          labels: reviewResult.segments?.map((_, i) => `Segment ${i + 1}`) || [],
+                          labels: reviewResult.segments?.map((s) => formatClock(s.start_sec)) || [],
                           datasets: [{
                             label: 'Score per Segment',
                             data: reviewResult.segments?.map((s) => s.avg_score) || [],
@@ -646,7 +688,9 @@ export default function App() {
                 </section>
               )}
             </>
-          ) : (
+          )}
+
+          {currentView === 'live' && (
             <>
               <section className="panel-card panel-live" id="live">
                 <div className="panel-head">
@@ -688,8 +732,13 @@ export default function App() {
                   </div>
                 </div>
 
-                <article className="video-card">
-                  <div className="video-card-media">
+                <EventCounterPanel events={liveEvents} />
+
+                <div className="grid-2">
+                  <article className="video-card">
+                    <ProximityHeatstrip score={Number(displayedFeatures?.proximity_score || 0)} />
+                    <div style={{ display: 'flex' }}>
+                      <div className="video-card-media" style={{ flex: 1 }}>
                     {liveVideoUrl ? (
                       <video
                         ref={liveVideoRef}
@@ -723,7 +772,9 @@ export default function App() {
                         Upload an MP4 file to begin live frame-by-frame analysis.
                       </div>
                     )}
-                  </div>
+                      </div>
+                      <BrakingMeter ratio={Number(displayedFeatures?.braking_ratio || displayedFeatures?.braking_flag || 0)} />
+                    </div>
                   <div className="video-card-body">
                     <h3 className="video-card-title line-clamp-2">
                       Real-Time Drive Session - Adaptive stream diagnostics
@@ -737,20 +788,21 @@ export default function App() {
                       <div className="progress-fill" style={{ width: `${liveProgressPct}%` }} />
                     </div>
                   </div>
-                </article>
-              </section>
+                  </article>
+                  <div className="stack-col">
+                    <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
+                    <SpeedProxyMiniChart history={livePoints.map(p => Number(p.features?.mean_flow || 0)).slice(-30)} />
+                  </div>
+                </div>
 
-              <section className="grid-2">
-                <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
-
-                <article className="card timeline-card">
+                <article className="card timeline-card" style={{ marginTop: '16px' }}>
                   <div className="card-title">Live Timeline</div>
                   <div className="timeline-module">
                     <div className="timeline-module-head static">
                       <span className="timeline-module-title">Module 01 - Live Coaching Events</span>
                       <span className="timeline-module-count">{liveEvents.length || 0} lessons</span>
                     </div>
-                    <div className="timeline-module-body expanded">
+                    <div className="timeline-module-body expanded" style={{ maxHeight: '400px', overflowY: 'auto', paddingRight: '4px' }}>
                       {liveEvents.length > 0 ? (
                         liveEvents.map((insight, idx) => {
                           const label = formatClock(insight.timestamp_sec)
@@ -770,6 +822,7 @@ export default function App() {
                                 <span className="line-clamp-2">{insight.label}</span>
                                 <div className="timeline-video-meta">
                                   <span>{label}</span>
+                                  {insight.score != null && <span style={{ fontSize: '11px', color: 'var(--c-white-72)', fontWeight: 600 }}>Score: {insight.score}</span>}
                                   <span className={`severity-badge severity-${insight.type}`}>{insight.type}</span>
                                 </div>
                               </button>
@@ -784,15 +837,15 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                  </div>
-                </article>
+                    </div>
+                  </article>
               </section>
             </>
           )}
 
           <section className="score-feature-grid" id="insights">
             <ScoreGauge score={displayedScore} />
-            <FeatureTable features={displayedFeatures} />
+            <FeatureTable features={displayedFeatures} history={isLiveMode ? livePoints : []} />
           </section>
 
           <section>
@@ -809,9 +862,7 @@ export default function App() {
             />
           </section>
 
-          <section id="visualiser">
-            <BehaviourVisualiser features={displayedFeatures} />
-          </section>
+
         </main>
       </div>
 
