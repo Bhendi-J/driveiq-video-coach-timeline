@@ -119,6 +119,7 @@ def score():
         telemetry = data.get("telemetry", {})
         frame_b64 = data.get("frame_b64")
         prev_frame_b64 = data.get("prev_frame_b64")
+        scoring_mode = data.get("scoring_mode", "event_rules")  # "event_rules" or "xgboost"
         session_id = _resolve_session(data)
         now_ts = time.time()
         _LAST_ACTIVITY_BY_SESSION[session_id] = now_ts
@@ -192,8 +193,31 @@ def score():
                 elif k in ratio_keys:
                     feature_dict[k] = max(0.0, min(1.0, float(v)))
         
-        # Event-based deduction scoring (replaces XGBoost regression)
-        raw_score, events = score_window(feature_dict)
+        # Always detect events for the timeline (regardless of scoring mode)
+        _, events = score_window(feature_dict)
+
+        # Choose scoring path based on client request
+        score_source = "event_rules"
+        if scoring_mode == "xgboost":
+            xgb = models.get("xgb")
+            scaler = models.get("scaler")
+            if xgb is not None and scaler is not None:
+                try:
+                    from cv.cv_pipeline import feature_vector_for_xgb
+                    xgb_input = feature_vector_for_xgb(feature_dict, scaler)
+                    raw_score = float(xgb.predict(xgb_input)[0])
+                    raw_score = max(0.0, min(100.0, raw_score))
+                    score_source = "xgboost"
+                except Exception as e:
+                    logger.warning(f"XGBoost prediction failed, falling back to event_rules: {e}")
+                    raw_score, _ = score_window(feature_dict)
+                    score_source = "event_rules_fallback"
+            else:
+                logger.warning("XGBoost model not loaded, falling back to event_rules")
+                raw_score, _ = score_window(feature_dict)
+                score_source = "event_rules_fallback"
+        else:
+            raw_score, _ = score_window(feature_dict)
 
         # Apply per-session EMA smoothing for live mode stability.
         # Reset EMA when idle gap is too long (new segment) or when session_id is first seen.
@@ -216,7 +240,7 @@ def score():
         _LAST_SCORE_TS_BY_SESSION[session_id] = now_ts
 
         if events:
-            logger.info(f"Events detected: {events} | raw={raw_score:.1f} smoothed={score_val:.1f}")
+            logger.info(f"[{score_source}] Events: {events} | raw={raw_score:.1f} smoothed={score_val:.1f}")
 
         session_saved = False
         session_save_error = None
@@ -233,6 +257,7 @@ def score():
             "score": round(score_val, 2),
             "eco_score": round(score_val, 2),
             "features": feature_dict,
+            "score_source": score_source,
             "auth_failed": auth_failed,
             "auth_error": auth_error,
             "session_saved": session_saved,

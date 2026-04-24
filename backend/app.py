@@ -83,7 +83,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=getattr(logging, log_level, logging.INFO), format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    print(f"\n🚗 DriveIQ API running on http://localhost:{port}")
+    print(f"\n DriveIQ API running on http://localhost:{port}")
     print("   Endpoints:")
     print("     GET  /api/health")
     print("     POST /api/score")

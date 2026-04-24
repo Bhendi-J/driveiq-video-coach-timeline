@@ -10,9 +10,9 @@ function scoreColor(s) {
 }
 
 function scoreLabel(s) {
-  if (s >= 75) return 'Stable'
-  if (s >= 50) return 'Balanced'
-  return 'Needs Work'
+  if (s >= 75) return 'Smooth'
+  if (s >= 50) return 'Fair'
+  return 'Rough'
 }
 
 export default function ScoreGauge({ score }) {
@@ -40,7 +40,7 @@ export default function ScoreGauge({ score }) {
 
   return (
     <div className="card">
-      <div className="card-title">Eco Score</div>
+      <div className="card-title">Drive Score</div>
       <div className="gauge-wrap">
         <Doughnut data={data} options={options} />
         <div className="gauge-center">

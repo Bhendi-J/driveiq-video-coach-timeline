@@ -31,6 +31,9 @@ flask-cors
 # Claude API (coaching messages)
 anthropic
 
+# Google Gemini API (coaching + session summary)
+google-genai
+
 # Utilities
 python-dotenv
 matplotlib

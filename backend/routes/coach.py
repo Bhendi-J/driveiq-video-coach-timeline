@@ -109,6 +109,19 @@ def _evaluate_rules(score: float, features: dict, events: list[str]) -> list[str
             "Pedestrians detected: reduce speed immediately."
         ]))
 
+    # New rules for Optical Flow features (mean_flow and low_motion_ratio)
+    mean_flow = float(features.get("mean_flow", 0.0))
+    flow_variance = float(features.get("flow_variance", 0.0))
+    low_motion_ratio = float(features.get("low_motion_ratio", 0.0))
+
+    if mean_flow > 15.0:
+        tips.append("High optical flow detected — possible aggressive acceleration or speeding.")
+    elif mean_flow > 8.0 and flow_variance > 15.0:
+        tips.append("Erratic speed changes detected — maintain steady throttle.")
+
+    if low_motion_ratio > 0.6:
+        tips.append("Extended idle or stop-and-go detected — consider smoother route planning.")
+
     if not tips:
         tips = [random.choice([
             "Your driving is smooth. Keep maintaining this consistent pace.",

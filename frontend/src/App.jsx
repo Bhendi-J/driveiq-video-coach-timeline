@@ -1,20 +1,20 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import axios from 'axios'
 
-import ScoreGauge         from './components/ScoreGauge'
-import CoachingPanel      from './components/CoachingPanel'
-import TrendChart         from './components/TrendChart'
+import ScoreGauge from './components/ScoreGauge'
+import CoachingPanel from './components/CoachingPanel'
+import TrendChart from './components/TrendChart'
 
-import FeatureTable        from './components/FeatureTable'
-import ReviewPanel         from './components/ReviewPanel'
-import LoginPanel          from './components/LoginPanel'
-import MainDashboard       from './components/MainDashboard'
-import MiniDashboard       from './components/MiniDashboard'
-import EventCounterPanel   from './components/EventCounterPanel'
-import ProximityHeatstrip  from './components/ProximityHeatstrip'
-import BrakingMeter        from './components/BrakingMeter'
+import FeatureTable from './components/FeatureTable'
+import ReviewPanel from './components/ReviewPanel'
+import LoginPanel from './components/LoginPanel'
+import MainDashboard from './components/MainDashboard'
+import MiniDashboard from './components/MiniDashboard'
+import EventCounterPanel from './components/EventCounterPanel'
+import ProximityHeatstrip from './components/ProximityHeatstrip'
+import BrakingMeter from './components/BrakingMeter'
 import SpeedProxyMiniChart from './components/SpeedProxyMiniChart'
-import { Bar }   from 'react-chartjs-2'
+import { Bar } from 'react-chartjs-2'
 import { Chart as ChartJS, BarElement, CategoryScale, LinearScale, Tooltip, Legend } from 'chart.js'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend)
@@ -27,12 +27,12 @@ const BACKEND_FAIL_THRESHOLD = 3
 // Simulate telemetry that changes over time for demo
 function generateTelemetry(t) {
   return {
-    speed:            55 + Math.sin(t * 0.3) * 30,
-    rpm:              2000 + Math.sin(t * 0.5) * 800,
+    speed: 55 + Math.sin(t * 0.3) * 30,
+    rpm: 2000 + Math.sin(t * 0.5) * 800,
     throttle_position: 30 + Math.sin(t * 0.4) * 20,
-    gear:              Math.floor(3 + Math.sin(t * 0.2) * 1.5),
-    acceleration:      Math.sin(t * 0.7) * 2,
-    fuel_rate:         7 + Math.sin(t * 0.3) * 2,
+    gear: Math.floor(3 + Math.sin(t * 0.2) * 1.5),
+    acceleration: Math.sin(t * 0.7) * 2,
+    fuel_rate: 7 + Math.sin(t * 0.3) * 2,
   }
 }
 
@@ -113,7 +113,7 @@ function formatClock(sec) {
 
 function getLiveInsights(features, score) {
   const insights = []
-  
+
   if (score >= 80) {
     insights.push({ label: 'Excellent driving behavior', type: 'green' })
   } else if (score < 50) {
@@ -134,11 +134,11 @@ function getLiveInsights(features, score) {
   if (features?.erratic_flag === 1) {
     insights.push({ label: 'High optical velocity changes', type: 'yellow' })
   }
-  
+
   if (insights.length === 0 || (insights.length === 1 && insights[0].type === 'green')) {
     insights.push({ label: 'Maintaining smooth, safe flow (+score)', type: 'green' })
   }
-  
+
   // Deduplicate using Map
   const unique = new Map()
   insights.forEach(i => unique.set(i.label, i))
@@ -164,32 +164,34 @@ function isJwtExpired(token) {
 }
 
 export default function App() {
-  const [token,             setToken]             = useState(localStorage.getItem('driveiq_token') || '')
-  const [showAuthDialog,    setShowAuthDialog]    = useState(false)
-  const [searchQuery,       setSearchQuery]       = useState('')
-  
-  const [currentView,       setCurrentView]       = useState('live')
+  const [token, setToken] = useState(localStorage.getItem('driveiq_token') || '')
+  const [showAuthDialog, setShowAuthDialog] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+
+  const [currentView, setCurrentView] = useState('live')
   const isLiveMode = currentView === 'live'
-  const [liveScore,         setLiveScore]         = useState(0)
-  const [liveFeatures,      setLiveFeatures]      = useState({ ...ZERO_FEATURES })
-  const [reviewResult,      setReviewResult]      = useState(null)
-  const [selectedWindow,    setSelectedWindow]    = useState(null)
-  const [healthState,       setHealthState]       = useState('checking')
-  const [healthMessage,     setHealthMessage]     = useState('Checking backend health...')
-  const [offlineMode,       setOfflineMode]       = useState(false)
+  const [liveScore, setLiveScore] = useState(0)
+  const [liveFeatures, setLiveFeatures] = useState({ ...ZERO_FEATURES })
+  const [reviewResult, setReviewResult] = useState(null)
+  const [selectedWindow, setSelectedWindow] = useState(null)
+  const [healthState, setHealthState] = useState('checking')
+  const [healthMessage, setHealthMessage] = useState('Checking backend health...')
+  const [offlineMode, setOfflineMode] = useState(false)
   const [sessionSaveWarning, setSessionSaveWarning] = useState('')
-  const [healthMeta,        setHealthMeta]        = useState({ schema_valid: false, core_models_loaded: false })
-  const [livePoints,        setLivePoints]        = useState([])
-  const [liveEvents,        setLiveEvents]        = useState([])
-  const [liveVideoFile,     setLiveVideoFile]     = useState(null)
-  const [streamActive,      setStreamActive]      = useState(false)
-  const [livePlayback,      setLivePlayback]      = useState({ current: 0, duration: 0 })
-  
+  const [healthMeta, setHealthMeta] = useState({ schema_valid: false, core_models_loaded: false })
+  const [livePoints, setLivePoints] = useState([])
+  const [liveEvents, setLiveEvents] = useState([])
+  const [liveVideoFile, setLiveVideoFile] = useState(null)
+  const [streamActive, setStreamActive] = useState(false)
+  const [streamComplete, setStreamComplete] = useState(false)
+  const [scoringMode, setScoringMode] = useState('xgboost')
+  const [livePlayback, setLivePlayback] = useState({ current: 0, duration: 0 })
+
   const liveVideoUrl = useMemo(() => {
     if (!liveVideoFile) return null
     return URL.createObjectURL(liveVideoFile)
   }, [liveVideoFile])
-  
+
   const clockRef = useRef(0)
   const sessionIdRef = useRef(`sess-${Math.random().toString(36).slice(2)}`)
   const sessionStartedAtRef = useRef(Date.now())
@@ -306,6 +308,7 @@ export default function App() {
         session_started_at: sessionStartedAtRef.current,
         frame_b64: frameB64,
         prev_frame_b64: prevFrameB64,
+        scoring_mode: scoringMode,
       }, {
         headers: authHeaders
       })
@@ -320,16 +323,16 @@ export default function App() {
           setSessionSaveWarning('')
         }
       }
-      
+
       const s = Number(data.score ?? 0)
       setLiveScore(s)
-      
+
       const featuresMerged = { ...data.features }
       setLiveFeatures(featuresMerged)
-      
+
       const insights = getLiveInsights(featuresMerged, s)
       const severity = severityLabel(s)
-      
+
       setLivePoints(prev => {
         const next = [...prev, { timestamp_sec: clockRef.current, score: s, severity }]
         if (next.length > 60) next.shift()
@@ -380,7 +383,7 @@ export default function App() {
       setHealthState('degraded')
       setHealthMessage('Backend unstable. Retrying score stream with backoff...')
     }
-  }, [healthState, offlineMode, isLiveMode, streamActive, token])
+  }, [healthState, offlineMode, isLiveMode, streamActive, token, scoringMode])
 
   const reconnectBackend = useCallback(async () => {
     healthFailCountRef.current = 0
@@ -412,23 +415,23 @@ export default function App() {
     : Number(selectedWindow?.avg_score ?? selectedWindow?.score ?? 0)
   const displayedFeatures = isLiveMode
     ? {
-        pedestrian_flag: liveFeatures?.pedestrian_flag ?? 0,
-        vehicle_density: liveFeatures?.vehicle_density ?? 0,
-        braking_flag: liveFeatures?.braking_flag ?? 0,
-        lane_change_flag: liveFeatures?.lane_change_flag ?? 0,
-        proximity_score: liveFeatures?.proximity_score ?? 0,
-        mean_flow: liveFeatures?.mean_flow ?? 0,
-        flow_variance: liveFeatures?.flow_variance ?? 0,
-      }
+      pedestrian_flag: liveFeatures?.pedestrian_flag ?? 0,
+      vehicle_density: liveFeatures?.vehicle_density ?? 0,
+      braking_flag: liveFeatures?.braking_flag ?? 0,
+      lane_change_flag: liveFeatures?.lane_change_flag ?? 0,
+      proximity_score: liveFeatures?.proximity_score ?? 0,
+      mean_flow: liveFeatures?.mean_flow ?? 0,
+      flow_variance: liveFeatures?.flow_variance ?? 0,
+    }
     : {
-        pedestrian_flag: Number(selectedWindow?.pedestrian_ratio ?? selectedWindow?.pedestrian_flag ?? 0) > 0 ? 1 : 0,
-        vehicle_density: Number(selectedWindow?.vehicle_density ?? selectedWindow?.vehicle_count ?? 0),
-        braking_flag: Number(selectedWindow?.braking_flag_ratio ?? 0) > 0 ? 1 : 0,
-        lane_change_flag: Number(selectedWindow?.lane_change_flag_ratio ?? 0) > 0 ? 1 : 0,
-        proximity_score: Number(selectedWindow?.proximity_score_mean ?? 0),
-        mean_flow: Number(selectedWindow?.mean_flow_mean ?? 0),
-        flow_variance: Number(selectedWindow?.flow_variance ?? 0),
-      }
+      pedestrian_flag: Number(selectedWindow?.pedestrian_ratio ?? selectedWindow?.pedestrian_flag ?? 0) > 0 ? 1 : 0,
+      vehicle_density: Number(selectedWindow?.vehicle_density ?? selectedWindow?.vehicle_count ?? 0),
+      braking_flag: Number(selectedWindow?.braking_flag_ratio ?? 0) > 0 ? 1 : 0,
+      lane_change_flag: Number(selectedWindow?.lane_change_flag_ratio ?? 0) > 0 ? 1 : 0,
+      proximity_score: Number(selectedWindow?.proximity_score_mean ?? 0),
+      mean_flow: Number(selectedWindow?.mean_flow_mean ?? 0),
+      flow_variance: Number(selectedWindow?.flow_variance ?? 0),
+    }
 
   const selectedCoach = selectedWindow?.coach_note || 'Select a segment to view coaching note.'
   const selectedSeverity = selectedWindow?.severity || 'yellow'
@@ -463,6 +466,23 @@ export default function App() {
     sessionStartedAtRef.current = Date.now()
     prevFrameRef.current = null
     streamCompleteRef.current = false
+    setStreamComplete(false)
+  }
+
+  const startNewSession = () => {
+    setLiveVideoFile(null)
+    setLivePoints([])
+    setLiveEvents([])
+    setLiveScore(0)
+    setLiveFeatures({ ...ZERO_FEATURES })
+    setStreamActive(false)
+    setStreamComplete(false)
+    setLivePlayback({ current: 0, duration: 0 })
+    clockRef.current = 0
+    sessionStartedAtRef.current = Date.now()
+    prevFrameRef.current = null
+    streamCompleteRef.current = false
+    sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
   }
 
   const scrollToSection = (sectionId) => {
@@ -576,14 +596,6 @@ export default function App() {
         ) : null}
 
         <main className="main-content">
-          {currentView === 'history' && (
-            <MainDashboard token={token} offlineMode={offlineMode} />
-          )}
-
-          {currentView !== 'history' && (
-            <MiniDashboard isLiveMode={isLiveMode} liveScore={liveScore} reviewResult={reviewResult} />
-          )}
-
           <section className="mode-toggle">
             <button
               type="button"
@@ -607,6 +619,14 @@ export default function App() {
               Post-Drive Full Analysis
             </button>
           </section>
+
+          {currentView === 'history' && (
+            <MainDashboard token={token} offlineMode={offlineMode} />
+          )}
+
+          {currentView !== 'history' && (
+            <MiniDashboard isLiveMode={isLiveMode} liveScore={liveScore} reviewResult={reviewResult} />
+          )}
 
           {currentView === 'review' && (
             <>
@@ -697,27 +717,37 @@ export default function App() {
                   <div>
                     <h2 className="section-title">Live Dynamic Streaming</h2>
                     <p className="panel-subtitle">Run a direct frame stream and monitor live timeline coaching output.</p>
+                    <button
+                      className="btn btn-ghost"
+                      style={{ marginTop: '8px', border: '1px solid var(--c-white-08)', padding: '4px 12px', fontSize: '11px' }}
+                      onClick={() => setScoringMode(m => m === 'xgboost' ? 'event_rules' : 'xgboost')}
+                    >
+                      Mode: <span style={{ color: 'var(--c-primary)', fontWeight: 'bold' }}>{scoringMode.replace('_', ' ')}</span>
+                    </button>
                   </div>
                   <div className="file-input-wrap">
-                    <input
-                      type="file"
-                      accept="video/mp4"
-                      onChange={(e) => {
-                        setLiveVideoFile(e.target.files?.[0] || null)
-                        setLivePoints([])
-                        setLiveEvents([])
-                        setLiveScore(0)
-                        setLiveFeatures({ ...ZERO_FEATURES })
-                        setStreamActive(false)
-                        setLivePlayback({ current: 0, duration: 0 })
-                        clockRef.current = 0
-                        sessionStartedAtRef.current = Date.now()
-                        prevFrameRef.current = null
-                        streamCompleteRef.current = false
-                        sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
-                      }}
-                    />
-                    {liveVideoUrl && !streamActive ? (
+                    {!streamComplete && (
+                      <input
+                        type="file"
+                        accept="video/mp4"
+                        onChange={(e) => {
+                          setLiveVideoFile(e.target.files?.[0] || null)
+                          setLivePoints([])
+                          setLiveEvents([])
+                          setLiveScore(0)
+                          setLiveFeatures({ ...ZERO_FEATURES })
+                          setStreamActive(false)
+                          setStreamComplete(false)
+                          setLivePlayback({ current: 0, duration: 0 })
+                          clockRef.current = 0
+                          sessionStartedAtRef.current = Date.now()
+                          prevFrameRef.current = null
+                          streamCompleteRef.current = false
+                          sessionIdRef.current = `sess-${Math.random().toString(36).slice(2)}`
+                        }}
+                      />
+                    )}
+                    {liveVideoUrl && !streamActive && !streamComplete ? (
                       <button
                         className="btn btn-primary"
                         onClick={() => {
@@ -729,65 +759,84 @@ export default function App() {
                         Start Stream
                       </button>
                     ) : null}
+                    {streamComplete && (
+                      <>
+                        <span className="severity-badge severity-green" style={{ padding: '6px 14px', fontSize: '12px' }}>✓ Stream Complete — Session Saved</span>
+                        <button className="btn" onClick={startNewSession}>New Session</button>
+                      </>
+                    )}
                   </div>
                 </div>
 
-                <EventCounterPanel events={liveEvents} />
+                <EventCounterPanel events={liveEvents} meanFlow={liveFeatures?.mean_flow || 0} />
 
                 <div className="grid-2">
                   <article className="video-card">
                     <ProximityHeatstrip score={Number(displayedFeatures?.proximity_score || 0)} />
                     <div style={{ display: 'flex' }}>
                       <div className="video-card-media" style={{ flex: 1 }}>
-                    {liveVideoUrl ? (
-                      <video
-                        ref={liveVideoRef}
-                        src={liveVideoUrl}
-                        controls
-                        muted
-                        onLoadedMetadata={(e) => {
-                          const duration = Number(e.currentTarget.duration) || 0
-                          setLivePlayback({ current: 0, duration })
-                        }}
-                        onTimeUpdate={(e) => {
-                          const current = Number(e.currentTarget.currentTime) || 0
-                          const duration = Number(e.currentTarget.duration) || 0
-                          setLivePlayback({ current, duration })
-                        }}
-                        onEnded={() => {
-                          setStreamActive(false)
-                          streamCompleteRef.current = true
-                          if (livePoints.length > 0) {
-                            const avg = livePoints.reduce((acc, p) => acc + p.score, 0) / livePoints.length
-                            setLiveScore(Math.round(avg))
-                            setLiveEvents((prev) => [
-                              { label: `Stream complete. Mean Eco Score ${Math.round(avg)}.`, type: 'green', timestamp_sec: clockRef.current },
-                              ...prev,
-                            ])
-                          }
-                        }}
-                      />
-                    ) : (
-                      <div className="video-placeholder">
-                        Upload an MP4 file to begin live frame-by-frame analysis.
-                      </div>
-                    )}
+                        {liveVideoUrl ? (
+                          <video
+                            ref={liveVideoRef}
+                            src={liveVideoUrl}
+                            controls={!streamComplete}
+                            muted
+                            onLoadedMetadata={(e) => {
+                              const duration = Number(e.currentTarget.duration) || 0
+                              setLivePlayback({ current: 0, duration })
+                            }}
+                            onTimeUpdate={(e) => {
+                              const current = Number(e.currentTarget.currentTime) || 0
+                              const duration = Number(e.currentTarget.duration) || 0
+                              setLivePlayback({ current, duration })
+                            }}
+                            onPlay={(e) => {
+                              // Block replay after stream is done
+                              if (streamCompleteRef.current) {
+                                e.currentTarget.pause()
+                                return
+                              }
+                            }}
+                            onEnded={() => {
+                              setStreamActive(false)
+                              streamCompleteRef.current = true
+                              setStreamComplete(true)
+                              // Pause and lock the video
+                              if (liveVideoRef.current) {
+                                liveVideoRef.current.pause()
+                              }
+                              if (livePoints.length > 0) {
+                                const avg = livePoints.reduce((acc, p) => acc + p.score, 0) / livePoints.length
+                                setLiveScore(Math.round(avg))
+                                setLiveEvents((prev) => [
+                                  { label: `Stream complete. Final score: ${Math.round(avg)}.`, type: 'green', timestamp_sec: clockRef.current },
+                                  ...prev,
+                                ])
+                              }
+                            }}
+                            style={streamComplete ? { pointerEvents: 'none', opacity: 0.6 } : {}}
+                          />
+                        ) : (
+                          <div className="video-placeholder">
+                            Upload an MP4 file to begin live frame-by-frame analysis.
+                          </div>
+                        )}
                       </div>
                       <BrakingMeter ratio={Number(displayedFeatures?.braking_ratio || displayedFeatures?.braking_flag || 0)} />
                     </div>
-                  <div className="video-card-body">
-                    <h3 className="video-card-title line-clamp-2">
-                      Real-Time Drive Session - Adaptive stream diagnostics
-                    </h3>
-                    <div className="video-card-meta">
-                      <span>{streamActive ? 'Streaming active' : 'Awaiting stream start'}</span>
-                      <span>{formatClock(livePlayback.current)} / {formatClock(livePlayback.duration)}</span>
-                      <span>{liveEvents.length} events</span>
+                    <div className="video-card-body">
+                      <h3 className="video-card-title line-clamp-2">
+                        Real-Time Drive Session - Adaptive stream diagnostics
+                      </h3>
+                      <div className="video-card-meta">
+                        <span>{streamComplete ? 'Stream finished' : streamActive ? 'Streaming active' : 'Awaiting stream start'}</span>
+                        <span>{formatClock(livePlayback.current)} / {formatClock(livePlayback.duration)}</span>
+                        <span>{liveEvents.length} events</span>
+                      </div>
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${liveProgressPct}%` }} />
+                      </div>
                     </div>
-                    <div className="progress-track">
-                      <div className="progress-fill" style={{ width: `${liveProgressPct}%` }} />
-                    </div>
-                  </div>
                   </article>
                   <div className="stack-col">
                     <TrendChart points={reviewPoints} emptyMessage="Stream a video to generate live trend mapping" />
@@ -837,8 +886,8 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                    </div>
-                  </article>
+                  </div>
+                </article>
               </section>
             </>
           )}

@@ -6,6 +6,7 @@ Multipart field: video (mp4)
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -19,7 +20,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from cv.cv_pipeline import feature_vector_for_xgb
 from pipeline.video_dataset_builder import aggregate_windows
-from backend.scoring import score_windows_with_ema, event_to_issue_key
+from backend.scoring import score_window, score_windows_with_ema, event_to_issue_key
 
 review_bp = Blueprint("review", __name__)
 CV_DEBUG = os.environ.get("DRIVEIQ_CV_DEBUG", "0") == "1"
@@ -38,6 +39,139 @@ def classify_severity(score):
         return "yellow"
     else:
         return "red"
+
+
+def _generate_session_summary_gemini(windows: list[dict], duration_sec: float) -> dict:
+    """Use Gemini to generate a structured overall session summary with robust truncation recovery."""
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return {"summary": None, "error": "gemini_unavailable"}
+
+        import google.genai as genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+
+        # Aggregate stats from windows
+        scores = [float(w.get("score", 0)) for w in windows]
+        avg_score = sum(scores) / max(len(scores), 1)
+        min_score = min(scores) if scores else 0
+        max_score = max(scores) if scores else 0
+
+        # Count events
+        event_counts: dict[str, int] = {}
+        for w in windows:
+            for ev in w.get("events", []):
+                event_counts[ev] = event_counts.get(ev, 0) + 1
+
+        # Aggregate feature averages (from coach_note context)
+        feature_keys = ["mean_flow", "flow_variance", "low_motion_ratio", "proximity_score"]
+        feature_avgs = {}
+        for fk in feature_keys:
+            vals = [float(w.get(fk, 0)) for w in windows if fk in w]
+            feature_avgs[fk] = round(sum(vals) / max(len(vals), 1), 3) if vals else 0.0
+
+        prompt = (
+            "You are a professional driving analyst. Analyze this driving session data and return ONLY valid JSON with no markdown formatting, no code fences, no preamble.\n"
+            f"\nSession stats:\n"
+            f"- Duration: {duration_sec:.1f} seconds\n"
+            f"- Windows analyzed: {len(windows)}\n"
+            f"- Average score: {avg_score:.1f} / 100\n"
+            f"- Min score: {min_score:.1f}, Max score: {max_score:.1f}\n"
+            f"- Events detected: {json.dumps(event_counts) if event_counts else 'None'}\n"
+            f"- Avg mean_flow: {feature_avgs.get('mean_flow', 0):.3f}\n"
+            f"- Avg flow_variance: {feature_avgs.get('flow_variance', 0):.3f}\n"
+            f"- Avg low_motion_ratio: {feature_avgs.get('low_motion_ratio', 0):.3f}\n"
+            f"- Avg proximity_score: {feature_avgs.get('proximity_score', 0):.3f}\n"
+            "\nReturn JSON with exactly these keys:\n"
+            '- "overall_rating": one of "Excellent", "Good", "Needs Improvement", "Poor"\n'
+            '- "what_went_well": list of 2-3 SHORT phrases (max 12 words each)\n'
+            '- "areas_to_improve": list of 2-3 SHORT actionable phrases (max 12 words each)\n'
+            '- "summary_paragraph": 2 sentences max\n'
+        )
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=2048,  # FIX: was 512/1000, causing truncation mid-response
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "overall_rating": {
+                            "type": "string",
+                            # FIX: enum constraint prevents unexpected values and reduces token usage
+                            "enum": ["Excellent", "Good", "Needs Improvement", "Poor"]
+                        },
+                        "what_went_well": {
+                            "type": "array",
+                            # FIX: maxLength enforced at schema level, not just via prompt instruction
+                            "items": {"type": "string", "maxLength": 80},
+                            "minItems": 2,
+                            "maxItems": 3
+                        },
+                        "areas_to_improve": {
+                            "type": "array",
+                            "items": {"type": "string", "maxLength": 80},
+                            "minItems": 2,
+                            "maxItems": 3
+                        },
+                        "summary_paragraph": {
+                            "type": "string",
+                            # FIX: hard cap on paragraph length keeps total JSON well under 2048 tokens
+                            "maxLength": 300
+                        }
+                    },
+                    "required": ["overall_rating", "what_went_well", "areas_to_improve", "summary_paragraph"]
+                }
+            )
+        )
+
+        raw_text = response.text.strip()
+
+        # Strip any accidental markdown fences Gemini may still emit
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[-2] if "```" in raw_text[3:] else raw_text
+            raw_text = raw_text.lstrip("`").lstrip("json").strip()
+
+        try:
+            parsed = json.loads(raw_text)
+            return {"summary": parsed, "error": None}
+        except json.JSONDecodeError:
+            # Last-resort: try to recover a truncated JSON object by closing it
+            recovered = _try_recover_truncated_json(raw_text)
+            if recovered:
+                logger.warning("/api/review gemini_summary_recovered via truncation fix")
+                return {"summary": recovered, "error": None}
+
+            logger.warning(f"Gemini session summary JSON parse failed. Raw: {raw_text[:200]}...")
+            return {"summary": None, "error": "gemini_parse_error", "raw": raw_text}
+
+    except Exception as e:
+        logger.error(f"Gemini session summary failed: {e}")
+        return {"summary": None, "error": "gemini_unavailable"}
+
+
+def _try_recover_truncated_json(raw: str) -> dict | None:
+    """
+    Best-effort recovery for a truncated JSON object from Gemini.
+    Tries progressively shorter suffixes to close the object validly.
+    Only accepts results that contain all four required keys.
+    """
+    required_keys = {"overall_rating", "what_went_well", "areas_to_improve", "summary_paragraph"}
+    closers = ['"}]}', '"]}', '"}', ']}}', '}}', '}']
+    for closer in closers:
+        try:
+            candidate = raw.rstrip().rstrip(",") + closer
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and required_keys.issubset(parsed.keys()):
+                return parsed
+        except (json.JSONDecodeError, Exception):
+            continue
+    return None
 
 
 def _extract_review_fast_features(
@@ -161,6 +295,25 @@ def _heuristic_score_from_features(features: dict) -> float:
     return max(0.0, min(100.0, score))
 
 
+def _evaluate_rules(score: float, features: dict, events: list[str]) -> list[str]:
+    tips = []
+    if "hard_braking" in events:
+        tips.append("Reduce hard braking — anticipate stops earlier.")
+    if "tailgating" in events:
+        tips.append("Increase following distance to reduce collision risk.")
+    if "lane_swerving" in events:
+        tips.append("Maintain steady lane position — avoid abrupt steering.")
+    if "erratic_speed" in events or float(features.get("flow_variance", 0)) > 15:
+        tips.append("Erratic speed changes detected — maintain steady throttle.")
+    if float(features.get("mean_flow", 0)) > 15:
+        tips.append("High optical flow — possible aggressive acceleration.")
+    if float(features.get("low_motion_ratio", 0)) > 0.6:
+        tips.append("Extended idle detected — consider smoother route planning.")
+    if not tips:
+        tips.append("Maintain smooth, consistent driving.")
+    return tips
+
+
 @review_bp.route("/api/review", methods=["POST"])
 def review():
     t0 = time.perf_counter()
@@ -171,6 +324,8 @@ def review():
 
     if not video_file.filename:
         return jsonify({"error": "empty_video", "message": "Uploaded video is empty"}), 400
+
+    scoring_mode = request.form.get("scoring_mode", "event_rules")  # "event_rules" or "xgboost"
 
     temp_path: Path | None = None
     try:
@@ -252,32 +407,62 @@ def review():
             }
             all_feature_dicts.append((row, feature_dict))
 
-        # Score all windows chronologically with EMA smoothing
-        scored = score_windows_with_ema([fd for _, fd in all_feature_dicts])
-        score_values = [float(s.get("smoothed_score", 0.0)) for s in scored]
-        logger.info(
-            "/api/review severity_thresholds mode=static yellow_min=%.2f green_min=%.2f",
-            YELLOW_THRESHOLD,
-            GREEN_THRESHOLD,
-        )
+        # Score all windows based on the requested scoring mode
+        use_xgb = scoring_mode == "xgboost" and xgb is not None and scaler is not None
+        actual_score_source = "xgboost" if use_xgb else "event_ema"
+        logger.info("/api/review scoring_mode_requested=%s actual=%s", scoring_mode, actual_score_source)
 
-        from backend.routes.coach import _evaluate_rules
+        if use_xgb:
+            # XGBoost scoring with EMA smoothing
+            from cv.cv_pipeline import feature_vector_for_xgb
+            prev_smoothed_xgb = 90.0  # BASE_SCORE
+            for i, (row, feature_dict) in enumerate(all_feature_dicts):
+                # Get events from event engine for timeline
+                _, events = score_window(feature_dict)
 
-        for i, (row, feature_dict) in enumerate(all_feature_dicts):
-            result = scored[i]
-            score_val = result["smoothed_score"]
-            events = result["events"]
+                # XGBoost prediction
+                try:
+                    xgb_input = feature_vector_for_xgb(feature_dict, scaler)
+                    raw_score = float(xgb.predict(xgb_input)[0])
+                    raw_score = max(0.0, min(100.0, raw_score))
+                except Exception as e:
+                    logger.warning(f"XGBoost predict failed for window {i}: {e}")
+                    raw_score, _ = score_window(feature_dict)
 
-            severity = classify_severity(score_val)
+                # EMA smoothing
+                smoothed = 0.6 * raw_score + 0.4 * prev_smoothed_xgb
+                smoothed = max(0.0, min(100.0, smoothed))
+                prev_smoothed_xgb = smoothed
 
-            top_issue = event_to_issue_key(events)
-            
-            # Fetch varied tips using the centralized rule engine
-            rule_tips = _evaluate_rules(score_val, feature_dict, events)
-            coach_note = rule_tips[0] if rule_tips else "Maintain smooth, consistent driving."
+                severity = classify_severity(smoothed)
+                top_issue = event_to_issue_key(events)
+                rule_tips = _evaluate_rules(smoothed, feature_dict, events)
+                coach_note = rule_tips[0] if rule_tips else "Maintain smooth, consistent driving."
 
-            windows_out.append(
-                {
+                windows_out.append({
+                    "timestamp_sec": round(float(row.get("timestamp_sec", row.get("window_center_sec", 0.0))), 3),
+                    "score": round(smoothed, 2),
+                    "severity": severity,
+                    "top_issue": top_issue,
+                    "coach_note": coach_note,
+                    "score_source": "xgboost",
+                    "events": events,
+                })
+        else:
+            # Event-based deduction scoring with EMA
+            scored = score_windows_with_ema([fd for _, fd in all_feature_dicts])
+
+            for i, (row, feature_dict) in enumerate(all_feature_dicts):
+                result = scored[i]
+                score_val = result["smoothed_score"]
+                events = result["events"]
+
+                severity = classify_severity(score_val)
+                top_issue = event_to_issue_key(events)
+                rule_tips = _evaluate_rules(score_val, feature_dict, events)
+                coach_note = rule_tips[0] if rule_tips else "Maintain smooth, consistent driving."
+
+                windows_out.append({
                     "timestamp_sec": round(float(row.get("timestamp_sec", row.get("window_center_sec", 0.0))), 3),
                     "score": round(score_val, 2),
                     "severity": severity,
@@ -285,8 +470,7 @@ def review():
                     "coach_note": coach_note,
                     "score_source": "event_ema",
                     "events": events,
-                }
-            )
+                })
 
         logger.info(
             "/api/review score_done rows=%s elapsed_ms=%.1f",
@@ -299,6 +483,10 @@ def review():
 
         logger.info("/api/review done elapsed_ms=%.1f", (time.perf_counter() - t0) * 1000.0)
 
+        # Generate Gemini-powered session summary
+        session_summary = _generate_session_summary_gemini(windows_out, duration_sec)
+        logger.info("/api/review session_summary error=%s", session_summary.get("error"))
+
         return jsonify(
             {
                 "windows": windows_out,
@@ -309,6 +497,7 @@ def review():
                     "yellow_min": YELLOW_THRESHOLD,
                     "green_min": GREEN_THRESHOLD,
                 },
+                "session_summary": session_summary,
             }
         )
     finally:

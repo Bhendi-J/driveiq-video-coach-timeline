@@ -926,22 +926,20 @@ input[type='file']::file-selector-button:hover {
 }
 
 .gauge-wrap {
-  width: 176px;
-  height: 176px;
-  margin: var(--s-2) auto;
+  width: 200px;
+  height: 200px;
+  margin: var(--s-3) auto var(--s-2);
   position: relative;
 }
 
 .gauge-center {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 20%;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding-top: 50px;
   pointer-events: none;
 }
 

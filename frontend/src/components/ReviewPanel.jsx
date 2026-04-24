@@ -279,91 +279,163 @@ export default function ReviewPanel({ onAnalysisComplete, onWindowSelect, select
       {error ? <div className="form-error">{error}</div> : null}
 
       {result ? (
-        <div className="grid-2-asym review-results-grid">
-          <article className="video-card">
-            <div className="video-card-media">
-              {videoUrl ? (
-                <video
-                  ref={videoRef}
-                  src={videoUrl}
-                  controls
-                  onLoadedMetadata={(e) => {
-                    const duration = Number(e.currentTarget.duration) || 0
-                    setPreviewPlayback({ current: 0, duration })
-                  }}
-                  onTimeUpdate={(e) => {
-                    const current = Number(e.currentTarget.currentTime) || 0
-                    const duration = Number(e.currentTarget.duration) || 0
-                    setPreviewPlayback({ current, duration })
-                  }}
-                />
-              ) : (
-                <div className="video-placeholder">Video preview unavailable.</div>
-              )}
-            </div>
-            <div className="video-card-body">
-              <h3 className="video-card-title line-clamp-2">
-                {file?.name || 'Uploaded Drive Session'}
-              </h3>
-              <div className="video-card-meta">
-                <span>{formatTime(result.duration_sec)} duration</span>
-                <span>{result.window_count} windows</span>
-                <span>{formatTime(previewPlayback.current)} watched</span>
+        <>
+          <div className="grid-2-asym review-results-grid">
+            <article className="video-card">
+              <div className="video-card-media">
+                {videoUrl ? (
+                  <video
+                    ref={videoRef}
+                    src={videoUrl}
+                    controls
+                    onLoadedMetadata={(e) => {
+                      const duration = Number(e.currentTarget.duration) || 0
+                      setPreviewPlayback({ current: 0, duration })
+                    }}
+                    onTimeUpdate={(e) => {
+                      const current = Number(e.currentTarget.currentTime) || 0
+                      const duration = Number(e.currentTarget.duration) || 0
+                      setPreviewPlayback({ current, duration })
+                    }}
+                  />
+                ) : (
+                  <div className="video-placeholder">Video preview unavailable.</div>
+                )}
               </div>
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${previewProgress}%` }} />
+              <div className="video-card-body">
+                <h3 className="video-card-title line-clamp-2">
+                  {file?.name || 'Uploaded Drive Session'}
+                </h3>
+                <div className="video-card-meta">
+                  <span>{formatTime(result.duration_sec)} duration</span>
+                  <span>{result.window_count} windows</span>
+                  <span>{formatTime(previewPlayback.current)} watched</span>
+                </div>
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${previewProgress}%` }} />
+                </div>
               </div>
-            </div>
-          </article>
+            </article>
 
-          <article className="card timeline-card">
-            <div className="card-title">Structured Timeline</div>
-            <div className="timeline-collection" style={{ overflowY: 'auto', maxHeight: '400px', paddingRight: '4px' }}>
-              {timelineModules.map((module) => {
-                const expanded = Boolean(expandedModules[module.id])
-                return (
-                  <div className={`timeline-module ${expanded ? 'open' : ''}`} key={module.id}>
-                    <button
-                      type="button"
-                      className={`timeline-module-head ${expanded ? 'expanded' : ''}`}
-                      onClick={() => toggleModule(module.id)}
-                    >
-                      <span className="timeline-module-title">{module.title}</span>
-                      <span className="timeline-module-count">{module.lessons.length} lessons</span>
-                    </button>
+            <article className="card timeline-card">
+              <div className="card-title">Structured Timeline</div>
+              <div className="timeline-collection" style={{ overflowY: 'auto', maxHeight: '400px', paddingRight: '4px' }}>
+                {timelineModules.map((module) => {
+                  const expanded = Boolean(expandedModules[module.id])
+                  return (
+                    <div className={`timeline-module ${expanded ? 'open' : ''}`} key={module.id}>
+                      <button
+                        type="button"
+                        className={`timeline-module-head ${expanded ? 'expanded' : ''}`}
+                        onClick={() => toggleModule(module.id)}
+                      >
+                        <span className="timeline-module-title">{module.title}</span>
+                        <span className="timeline-module-count">{module.lessons.length} lessons</span>
+                      </button>
 
-                    <div
-                      className={`timeline-module-body ${expanded ? 'expanded' : ''}`}
-                      style={{ maxHeight: expanded ? `${module.lessons.length * 144 + 32}px` : '0px' }}
-                    >
-                      {module.lessons.map((lesson) => {
-                        const seg = lesson.segment
-                        const isSelected = Number(selectedTimestampSec) === Number(seg.start_sec)
-                        return (
-                          <div className="timeline-lesson" key={lesson.id}>
-                            <span className="timeline-lesson-label">{lesson.label}</span>
-                            <button
-                              type="button"
-                              className={`timeline-video-item ${isSelected ? 'selected' : ''}`}
-                              onClick={() => seekTo(seg)}
-                            >
-                              <span className="line-clamp-2">{lesson.title}</span>
-                              <div className="timeline-video-meta">
-                                <span>{formatRange(seg.start_sec, seg.end_sec)} | {lesson.duration}s</span>
-                                <span>Score: {seg.score}</span>
-                                <span className={severityBadge(seg.severity)}>{seg.severity}</span>
-                              </div>
-                            </button>
-                          </div>
-                        )
-                      })}
+                      <div
+                        className={`timeline-module-body ${expanded ? 'expanded' : ''}`}
+                        style={{ maxHeight: expanded ? `${module.lessons.length * 144 + 32}px` : '0px' }}
+                      >
+                        {module.lessons.map((lesson) => {
+                          const seg = lesson.segment
+                          const isSelected = Number(selectedTimestampSec) === Number(seg.start_sec)
+                          return (
+                            <div className="timeline-lesson" key={lesson.id}>
+                              <span className="timeline-lesson-label">{lesson.label}</span>
+                              <button
+                                type="button"
+                                className={`timeline-video-item ${isSelected ? 'selected' : ''}`}
+                                onClick={() => seekTo(seg)}
+                              >
+                                <span className="line-clamp-2">{lesson.title}</span>
+                                <div className="timeline-video-meta">
+                                  <span>{formatRange(seg.start_sec, seg.end_sec)} | {lesson.duration}s</span>
+                                  <span>Score: {seg.score}</span>
+                                  <span className={severityBadge(seg.severity)}>{seg.severity}</span>
+                                </div>
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
                     </div>
+                  )
+                })}
+              </div>
+            </article>
+          </div>
+
+          {/* AI Session Summary Card */}
+          {result?.session_summary?.error && !result?.session_summary?.summary ? (
+            <article className="card" style={{ marginTop: '16px', padding: '16px' }}>
+              <span style={{ color: 'var(--c-white-46)', fontSize: '12px' }}>AI summary unavailable</span>
+            </article>
+          ) : null}
+
+          {result?.session_summary?.summary ? (() => {
+            const ss = result.session_summary.summary
+            const ratingColorMap = {
+              'Excellent': 'var(--c-green-bright)',
+              'Good': 'var(--c-primary)',
+              'Needs Improvement': 'var(--c-yellow-bright)',
+              'Poor': 'var(--c-red-bright)',
+            }
+            const ratingColor = ratingColorMap[ss.overall_rating] || 'var(--c-white-46)'
+
+            return (
+              <article className="card" style={{ marginTop: '16px', padding: '20px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div className="card-title" style={{ margin: 0 }}>AI Session Summary</div>
+                  <span style={{
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    background: 'var(--c-white-08)',
+                    color: ratingColor,
+                  }}>
+                    {ss.overall_rating}
+                  </span>
+                </div>
+
+                {ss.summary_paragraph ? (
+                  <p style={{ color: 'var(--c-white-72)', fontSize: '13px', lineHeight: '1.6', marginBottom: '16px' }}>
+                    {ss.summary_paragraph}
+                  </p>
+                ) : null}
+
+                {ss.what_went_well?.length ? (
+                  <div style={{ marginBottom: '12px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--c-white-46)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>What went well</div>
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                      {ss.what_went_well.map((item, i) => (
+                        <li key={i} style={{ fontSize: '12px', color: 'var(--c-white-72)', padding: '3px 0' }}>
+                          <span style={{ color: 'var(--c-green-bright)', marginRight: '6px' }}>✓</span>{item}
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                )
-              })}
-            </div>
-          </article>
-        </div>
+                ) : null}
+
+                {ss.areas_to_improve?.length ? (
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--c-white-46)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Areas to improve</div>
+                    <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                      {ss.areas_to_improve.map((item, i) => (
+                        <li key={i} style={{ fontSize: '12px', color: 'var(--c-white-72)', padding: '3px 0' }}>
+                          <span style={{ color: 'var(--c-yellow-bright)', marginRight: '6px' }}>⚠</span>{item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </article>
+            )
+          })() : null}
+        </>
       ) : null}
     </div>
   )
